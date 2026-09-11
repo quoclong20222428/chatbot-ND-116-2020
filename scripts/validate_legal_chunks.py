@@ -8,7 +8,7 @@ import re
 from collections import Counter
 from pathlib import Path
 
-from legal_chunker import KNOWN_DOCUMENTS, MARKDOWN_DIR, QA_PATH, SOURCE_CONFIG, OUTPUT_PATH
+from legal_chunker import AUTHORITY_CONFIG, KNOWN_DOCUMENTS, MARKDOWN_DIR, QA_PATH, SOURCE_CONFIG, OUTPUT_PATH
 
 
 def load_chunks(path: Path) -> list[dict]:
@@ -44,6 +44,24 @@ def validate(path: Path) -> dict:
             errors.append(f"{chunk.get('chunk_id')}: unknown document_id")
         if chunk.get("source_type") not in {"core", "reference", "qa"}:
             errors.append(f"{chunk.get('chunk_id')}: invalid source_type")
+        expected_role = AUTHORITY_CONFIG.get(chunk.get("document_id"))
+        if not expected_role:
+            errors.append(f"{chunk.get('chunk_id')}: missing authority configuration")
+        else:
+            role, authority, priority, behavior = expected_role
+            if chunk.get("document_role") != role:
+                errors.append(f"{chunk.get('chunk_id')}: invalid document_role")
+            if chunk.get("authority_level") != authority:
+                errors.append(f"{chunk.get('chunk_id')}: invalid authority_level")
+            if chunk.get("retrieval_priority") != priority:
+                errors.append(f"{chunk.get('chunk_id')}: invalid retrieval_priority")
+            if chunk.get("retrieval_behavior") != behavior:
+                errors.append(f"{chunk.get('chunk_id')}: invalid retrieval_behavior")
+        for relation in chunk.get("document_relations", []):
+            if relation.get("relation_type") == "amends" and chunk.get("document_id") != "60_2025_ND-CP":
+                errors.append(f"{chunk.get('chunk_id')}: invalid amendment relation owner")
+            if relation.get("target_document_id") not in KNOWN_DOCUMENTS:
+                errors.append(f"{chunk.get('chunk_id')}: invalid relation target")
         for reference in chunk.get("references", []):
             resolved = reference.get("resolved_document_id")
             if resolved is not None and resolved not in KNOWN_DOCUMENTS:
@@ -60,6 +78,16 @@ def validate(path: Path) -> dict:
     references = [reference for chunk in chunks for reference in chunk.get("references", [])]
     resolved = [reference for reference in references if reference.get("resolved_document_id")]
     unresolved = [reference for reference in references if not reference.get("resolved_document_id")]
+    roles = Counter(chunk.get("document_role") for chunk in chunks)
+    amendment_relations = [
+        relation
+        for chunk in chunks
+        for relation in chunk.get("document_relations", [])
+        if relation.get("relation_type") == "amends"
+    ]
+    resolved_amendment_relations = [
+        relation for relation in amendment_relations if relation.get("resolution_status") == "resolved"
+    ]
     return {
         "valid": not errors,
         "errors": errors,
@@ -67,6 +95,10 @@ def validate(path: Path) -> dict:
         "detected_references": len(references),
         "resolved_references": len(resolved),
         "unresolved_references": len(unresolved),
+        "chunks_per_role": dict(roles),
+        "amendment_relations": len(amendment_relations),
+        "resolved_amendment_relations": len(resolved_amendment_relations),
+        "unresolved_amendment_relations": len(amendment_relations) - len(resolved_amendment_relations),
         "qa_pairs": len(qa_chunks),
         "expected_source_files": sorted(expected_sources),
     }

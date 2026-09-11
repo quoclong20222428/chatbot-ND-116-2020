@@ -23,6 +23,13 @@ SOURCE_CONFIG = {
 QA_CONFIG = ("hoi-dap-nghi-dinh-116-2020-nd-cp", "Hỏi đáp Nghị định 116/2020/NĐ-CP", "qa")
 KNOWN_DOCUMENTS = {config[0] for config in SOURCE_CONFIG.values()} | {QA_CONFIG[0]}
 
+AUTHORITY_CONFIG = {
+    "116_2020_ND-CP": ("primary", "primary_legal_source", 100, "primary"),
+    "60_2025_ND-CP": ("amendment", "amending_legal_source", 90, "conditional_amendment"),
+    "LUAT_GIAO_DUC_2019": ("supporting", "supporting_legal_source", 60, "on_demand_support"),
+    "hoi-dap-nghi-dinh-116-2020-nd-cp": ("qa", "reference_qa", 30, "reference_then_validate"),
+}
+
 CHAPTER_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*|__)?Chương\s+([IVXLCDM]+)\b", re.IGNORECASE)
 SECTION_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*|__)?Mục\s+([IVXLCDM]+)\b", re.IGNORECASE)
 SUBSECTION_RE = re.compile(r"^\s*(?:#+\s*)?(?:\*\*|__)?Tiểu mục\s+([IVXLCDM]+)\b", re.IGNORECASE)
@@ -93,12 +100,26 @@ def slug(value: str) -> str:
 
 
 def make_chunk(base: dict, suffix: str, text: str, **metadata) -> dict:
+    role, authority_level, retrieval_priority, retrieval_behavior = AUTHORITY_CONFIG[base["document_id"]]
+    relations = []
+    if base["document_id"] == "60_2025_ND-CP":
+        relations.append({
+            "relation_type": "amends",
+            "target_document_id": "116_2020_ND-CP",
+            "target_provision": None,
+            "resolution_status": "document_resolved_provision_unresolved",
+        })
     record = {
         "chunk_id": f"{base['document_id'].replace('_', '-')}-{suffix}",
         "document_id": base["document_id"],
         "document_title": base["document_title"],
         "document_number": base.get("document_number"),
         "source_type": base["source_type"],
+        "document_role": role,
+        "authority_level": authority_level,
+        "retrieval_priority": retrieval_priority,
+        "retrieval_behavior": retrieval_behavior,
+        "document_relations": relations,
         "chapter": metadata.get("chapter"),
         "section": metadata.get("section"),
         "subsection": metadata.get("subsection"),
@@ -157,6 +178,13 @@ def add_resolved_chunk_ids(chunks: list[dict]) -> None:
                 reference["resolved_chunk_id"] = candidates[0]
             elif not clause and not point and (document_id, article) in article_chunks:
                 reference["resolved_chunk_id"] = article_chunks[(document_id, article)]
+            if chunk["document_id"] == "60_2025_ND-CP" and document_id == "116_2020_ND-CP":
+                relation = chunk["document_relations"][0]
+                relation.update({
+                    "target_provision": provision,
+                    "target_chunk_id": reference.get("resolved_chunk_id"),
+                    "resolution_status": "resolved",
+                })
 
 
 def split_structured(lines: list[str], base: dict) -> list[dict]:
@@ -234,7 +262,11 @@ def split_structured(lines: list[str], base: dict) -> list[dict]:
 
 
 def parse_qa(path: Path) -> list[dict]:
-    base = {"document_id": QA_CONFIG[0], "document_title": QA_CONFIG[1], "source_type": QA_CONFIG[2]}
+    base = {
+        "document_id": QA_CONFIG[0],
+        "document_title": QA_CONFIG[1],
+        "source_type": QA_CONFIG[2],
+    }
     chunks = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.startswith("|") or re.match(r"\|\s*-", line):
