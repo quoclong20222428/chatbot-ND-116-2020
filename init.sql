@@ -84,7 +84,9 @@ CREATE TEMP TABLE _legal_chunks_import (
 ) ON COMMIT DROP;
 
 -- Run this script from the repository root so the relative path resolves.
-\copy _legal_chunks_import(record) FROM 'data/processed/legal_chunks.jsonl'
+-- CSV mode preserves JSON escape sequences such as \n. The control characters
+-- below are reserved so the JSONL records are each treated as one column.
+\copy _legal_chunks_import(record) FROM 'data/processed/legal_chunks.jsonl' WITH (FORMAT csv, DELIMITER E'\x1f', QUOTE E'\x1e', ESCAPE E'\x1e')
 
 DELETE FROM legal_chunk_references;
 
