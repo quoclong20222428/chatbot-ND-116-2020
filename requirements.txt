@@ -1,0 +1,36 @@
+# ===========================================================================
+# Dependencies for Legal RAG Chatbot (Nghị định 116/2020/NĐ-CP)
+# ===========================================================================
+#
+# Quick setup in the 'chatbot' Conda environment:
+#
+#   conda activate chatbot
+#
+# ---------------------------------------------------------------------------
+# 1. PyTorch Installation (Choose GPU CUDA or CPU)
+# ---------------------------------------------------------------------------
+# If you have an NVIDIA GPU (e.g. RTX 3050, RTX 40xx):
+#   pip install torch --index-url https://download.pytorch.org/whl/cu128
+#
+# If running CPU-only:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#
+# ---------------------------------------------------------------------------
+# 2. Project Dependencies
+# ---------------------------------------------------------------------------
+# Install all required packages:
+#   pip install -r requirements.txt
+#
+# ---------------------------------------------------------------------------
+
+# Database: PostgreSQL driver for data import and indexing scripts
+psycopg[binary]>=3.1.0
+
+# Vector database adapter: pgvector extension support for PostgreSQL
+pgvector>=0.3.0
+
+# Embedding model: Official BAAI library for BAAI/bge-m3 dense vector generation
+FlagEmbedding>=1.2.9
+
+# Testing: Unit test suite (tests/test_embedding.py)
+pytest>=8.0.0

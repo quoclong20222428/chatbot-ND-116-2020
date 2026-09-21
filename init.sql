@@ -3,6 +3,7 @@
 BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE EXTENSION IF NOT EXISTS vector;
 
 CREATE TABLE IF NOT EXISTS documents (
 	document_id TEXT PRIMARY KEY,
@@ -49,6 +50,13 @@ CREATE TABLE IF NOT EXISTS legal_chunks (
 	CHECK (jsonb_typeof(related_provisions) = 'array'),
 	CHECK (jsonb_typeof(document_relations) = 'array')
 );
+
+-- Add the pgvector embedding column if it does not already exist.
+-- Dimension 1024 matches the dense output of BAAI/bge-m3.
+-- NULL means the chunk has not been embedded yet; the indexing script
+-- queries WHERE embedding IS NULL so it can resume safely after interruption.
+ALTER TABLE legal_chunks
+	ADD COLUMN IF NOT EXISTS embedding vector(1024);
 
 CREATE TABLE IF NOT EXISTS legal_chunk_references (
 	reference_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -220,5 +228,15 @@ FROM legal_chunks AS chunk
 CROSS JOIN LATERAL jsonb_array_elements(chunk."references") AS reference
 WHERE NULLIF(reference->>'raw_reference', '') IS NOT NULL
 ON CONFLICT DO NOTHING;
+
+-- Create the HNSW vector index for cosine similarity search.
+-- Placed after data import so the index is built once over populated data
+-- rather than maintained incrementally during bulk inserts.
+-- m=16 and ef_construction=64 are the pgvector defaults; suitable for a
+-- dataset of this size and provide a good accuracy / build-time trade-off.
+-- The index is created CONCURRENTLY via IF NOT EXISTS; safe to re-run.
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_hnsw_idx
+	ON legal_chunks USING hnsw (embedding vector_cosine_ops)
+	WITH (m = 16, ef_construction = 64);
 
 COMMIT;

@@ -8,7 +8,7 @@ Bộ câu hỏi–trả lời về Nghị định 116 chỉ là nguồn tham kh�
 
 Theo định hướng RAG, hệ thống sẽ nhận câu hỏi, truy xuất các đoạn pháp lý liên quan, ưu tiên nguồn có thẩm quyền, xem xét quan hệ giữa văn bản gốc và văn bản sửa đổi, rồi cung cấp câu trả lời dựa trên nội dung đã truy xuất.
 
-Hiện repository tập trung vào pipeline chuẩn bị, kiểm tra và import dữ liệu vào PostgreSQL. Các thành phần truy vấn, sinh câu trả lời, giao diện và tích hợp mô hình ngôn ngữ chưa được xem là hoàn thiện nếu chưa có mã tương ứng.
+Hiện repository đã hoàn thành trọn vẹn pipeline chuẩn bị, import dữ liệu và giai đoạn Vectorization/Indexing (nhúng vector với `BAAI/bge-m3` và tạo chỉ mục HNSW trên PostgreSQL với pgvector). Các thành phần truy vấn (Retrieval), sinh câu trả lời (Generation), giao diện và tích hợp mô hình ngôn ngữ đang trong lộ trình phát triển tiếp theo.
 
 ## 2. Mục tiêu
 
@@ -57,70 +57,107 @@ Tệp được import là \`data/processed/legal_chunks.jsonl\`, không phải c
 
 Cần có Conda, PostgreSQL đang chạy và có thể kết nối bằng \`DATABASE_URL\`, PostgreSQL client \`psql\` trong \`PATH\` của môi trường \`chatbot\`, cùng một trong hai thư viện Python \`psycopg\` hoặc \`psycopg2\`.
 
-Repository không yêu cầu Docker và không có \`requirements.txt\` hoặc \`pyproject.toml\`. PostgreSQL có thể chạy cục bộ hoặc trên máy chủ từ xa; máy chạy script phải truy cập được máy chủ và tài khoản phải có quyền tạo bảng, index và extension \`pg_trgm\`.
+Repository không yêu cầu Docker. Các thư viện Python cần thiết được định nghĩa đầy đủ trong `requirements.txt`. PostgreSQL có thể chạy cục bộ hoặc trên máy chủ từ xa (như NeonDB, Supabase); máy chạy script phải truy cập được máy chủ và tài khoản phải có quyền tạo bảng, index và các extension `pg_trgm`, `pgvector`.
 
 ## 7. Cấu trúc thư mục liên quan
 
-\`\`\`text
+```text
 init.sql
+.env.example
+requirements.txt
 README.md
 scripts/
 ├── import_legal_data.py
 ├── legal_chunker.py
-└── validate_legal_chunks.py
+├── validate_legal_chunks.py
+├── embedding.py
+├── index_embeddings.py
+└── gpu_smoke_test.py
+tests/
+└── test_embedding.py
 data/
 ├── markdown/
 ├── raw/
 └── processed/
     └── legal_chunks.jsonl
-\`\`\`
+```
 
 ## 8. Hướng dẫn cài đặt
 
 ### Bước 1: Sao chép dự án và chuyển vào thư mục
 
-\`\`\`powershell
+```powershell
 git clone <URL_KHO_LUU_TRU>
 cd RAG-chatbot
-\`\`\`
+```
 
 Nếu đã có mã nguồn:
 
-\`\`\`powershell
+```powershell
 cd <DUONG_DAN_TOI_THU_MUC_RAG-chatbot>
-\`\`\`
+```
 
 ### Bước 2: Tạo và kích hoạt môi trường Conda
 
 Chỉ tạo môi trường nếu môi trường chưa tồn tại:
 
-\`\`\`powershell
-conda create -n chatbot python
+```powershell
+conda create -n chatbot python=3.11 -y
 conda activate chatbot
-\`\`\`
+```
 
-Cài \`psql\` và thư viện kết nối:
+Cài `psql` (PostgreSQL client) từ conda-forge:
 
-\`\`\`powershell
-conda install -c conda-forge postgresql psycopg
-\`\`\`
+```powershell
+conda install -c conda-forge postgresql -y
+```
 
-Nếu đã cài \`psycopg2\` thì có thể dùng thư viện đó thay cho \`psycopg\`.
+### Bước 3: Cài đặt các thư viện Python (requirements.txt)
 
-\`\`\`powershell
+Nếu sử dụng GPU NVIDIA CUDA (ví dụ RTX 3050, 40xx):
+
+```powershell
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt
+```
+
+Nếu chạy CPU thuần:
+
+```powershell
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+pip install -r requirements.txt
+```
+### Bước 4: Kiểm tra môi trường
+
+```powershell
 where.exe psql
 python --version
-\`\`\`
+```
 
 ## 9. Cấu hình biến môi trường
 
-Tạo hoặc chỉnh sửa \`.env\` ở thư mục gốc:
+Sao chép tệp mẫu `.env.example` thành `.env` ở thư mục gốc và chỉnh sửa cấu hình:
 
-\`\`\`env
-DATABASE_URL=postgresql://<ten_nguoi_dung>:<mat_khau>@<may_chu>:<cong>/<ten_co_so_du_lieu>
-\`\`\`
+```powershell
+copy .env.example .env
+```
 
-Đây chỉ là mẫu; không đưa thông tin đăng nhập thật vào README hoặc mã nguồn. Script ưu tiên biến \`DATABASE_URL\` trong môi trường, sau đó mới đọc \`.env\`.
+Nội dung `.env`:
+
+```env
+# Cơ sở dữ liệu (Bắt buộc)
+DATABASE_URL=postgresql://<ten_nguoi_dung>:<mat_khau>@<may_chu>:<cong>/<ten_co_so_du_lieu>?sslmode=require
+
+# Cấu hình Indexing & Embedding (Tùy chọn / Option)
+EMBEDDING_MODEL=BAAI/bge-m3
+EMBEDDING_BATCH_SIZE=8
+HF_TOKEN=
+
+# Cấu hình LLM sinh câu trả lời (Tùy chọn / Option - Phục vụ giai đoạn sau)
+GEMINI_API_KEY=
+```
+
+Đây chỉ là mẫu; không đưa thông tin đăng nhập thật vào README hoặc đẩy file `.env` lên git (đã được cấu hình trong `.gitignore`). Script ưu tiên biến `DATABASE_URL` trong môi trường hệ thống, sau đó mới đọc `.env`.
 
 Hoặc cấu hình cho phiên PowerShell hiện tại:
 
@@ -188,6 +225,227 @@ Kiểm tra danh sách văn bản:
 psql --dbname "$env:DATABASE_URL" --command "SELECT document_id, document_number, document_title FROM documents ORDER BY document_id;"
 \`\`\`
 
-## 12. Trạng thái phát triển
 
-Đã có pipeline tạo/kiểm tra JSONL và import vào ba bảng \`documents\`, \`legal_chunks\`, \`legal_chunk_references\`, cùng cơ chế upsert để chạy lại. Truy xuất theo câu hỏi, xếp hạng kết quả, sinh câu trả lời bằng mô hình ngôn ngữ, giao diện và đánh giá chất lượng là các giai đoạn tiếp theo; README này không coi chúng là tính năng đã hoàn thành.
+## 12. Giai đoạn 2: Nhúng văn bản (Indexing / Vectorization)
+
+Giai đoạn này sinh vector nhúng (embedding) cho từng `legal_chunk` và lưu vào cột `embedding vector(1024)` trên bảng `legal_chunks` thông qua extension `pgvector` của PostgreSQL.
+
+### Mô hình nhúng
+
+```text
+BAAI/bge-m3
+```
+
+Tải tự động từ Hugging Face khi chạy lần đầu (khoảng 2,3 GB). Không yêu cầu xác thực. Mô hình tạo vector **1024 chiều**, chuẩn hóa L2, phù hợp với **cosine similarity**. Hỗ trợ tiếng Việt theo mặc định — không cần dịch hay xử lý đặc biệt.
+
+### Cài đặt thư viện phụ thuộc
+
+Dự án sử dụng tệp `requirements.txt` duy nhất chứa toàn bộ các gói thư viện cần thiết (`psycopg`, `pgvector`, `FlagEmbedding`, `pytest`).
+
+Cài đặt trong môi trường `chatbot`:
+
+```powershell
+conda activate chatbot
+
+# Nếu dùng GPU NVIDIA CUDA (khuyến nghị cho tốc độ cao):
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+pip install -r requirements.txt
+
+# Hoặc nếu chỉ dùng CPU:
+# pip install torch --index-url https://download.pytorch.org/whl/cpu
+# pip install -r requirements.txt
+```
+
+Kiểm tra nhận diện GPU và chạy GPU smoke test:
+
+```powershell
+# Kiểm tra PyTorch nhận diện GPU
+python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0))"
+
+# Chạy smoke test BAAI/bge-m3 trên GPU
+python scripts/gpu_smoke_test.py
+```
+
+### Kiến trúc module
+
+```text
+scripts/embedding.py        ← thành phần thuần nhúng: text → vector
+scripts/index_embeddings.py ← script chạy indexing: đọc DB → nhúng → ghi DB
+scripts/gpu_smoke_test.py   ← script kiểm tra khả năng tương thích và bộ nhớ GPU
+```
+
+`embedding.py` sẽ được tái sử dụng ở giai đoạn Retrieval để nhúng câu hỏi của người dùng với cùng mô hình, không cần thay đổi.
+
+### Chạy indexing
+
+```powershell
+conda activate chatbot
+# Khuyến nghị --batch-size 4 cho GPU 6GB VRAM (hoặc mặc định 32 nếu chạy CPU)
+python scripts/index_embeddings.py --batch-size 4
+```
+
+Script sẽ: (1) tải/nạp `BAAI/bge-m3`, (2) chỉ lấy các chunk có `embedding IS NULL`, (3) xử lý nhúng theo từng batch, (4) cập nhật embedding vào database, (5) tự động xác minh tính toàn vẹn của dữ liệu và HNSW index.
+
+### Kết quả Indexing và Nghiệm thu thực tế (Verified Milestone)
+
+Quá trình nhúng vector toàn bộ văn bản pháp lý đã hoàn tất 100%:
+
+```text
+INFO: --- Indexing summary ---
+INFO: Successfully indexed: 521
+INFO: Failed:               0
+INFO: --- Verification ---
+INFO: Total chunks:         617
+INFO: Embedded chunks:      617
+INFO: Missing embeddings:   0
+INFO: Embedding dimension:  1024
+INFO: Dimension correct:    True
+INFO: HNSW index exists:    True
+INFO: Indexing stage complete. Database is ready for retrieval.
+```
+
+**Chi tiết nghiệm thu:**
+- **Độ phủ dữ liệu**: Toàn bộ **617/617** legal chunks đã được vector hóa thành công (tỷ lệ thành công 100%, 0 lỗi).
+- **Tính năng tiếp nối (Idempotent / Resume)**: Script tự động phát hiện 96 chunks đã nhúng trước đó và chỉ xử lý 521 chunks còn thiếu mà không gây trùng lặp hay ghi đè sai lệch.
+- **Kích thước vector (Embedding Dimension)**: 1024 chiều, chuẩn hóa L2 từ mô hình `BAAI/bge-m3` (`Dimension correct: True`).
+- **Chỉ mục vector (pgvector HNSW Index)**: `legal_chunks_embedding_hnsw_idx` với toán tử `vector_cosine_ops` đã tồn tại và sẵn sàng phục vụ truy vấn tương đồng cosine (`HNSW index exists: True`).
+- **Tăng tốc phần cứng**: Kiểm thử và chạy thực tế thành công trên GPU NVIDIA GeForce RTX 3050 Laptop GPU (6GB VRAM) với CUDA 12.8.
+
+### Chi tiết các thông số cấu hình
+
+Hệ thống hỗ trợ cấu hình thông số linh hoạt qua dòng lệnh (CLI), file môi trường (`.env`), mã nguồn module nhúng và chỉ mục cơ sở dữ liệu:
+
+#### 1. Tham số Mô hình & Tiến trình Indexing
+
+| Tham số CLI | Biến môi trường (`.env`) | Mặc định | Mô tả & Tác động |
+|---|---|:---:|---|
+| `--model NAME` | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Định danh mô hình Hugging Face. Mô hình sinh vector dense 1024 chiều, hỗ trợ đa ngữ tốt với tiếng Việt pháp lý, ngữ cảnh tối đa 8192 tokens. |
+| `--batch-size N` | `EMBEDDING_BATCH_SIZE` | `32` (CLI mặc định) | Số chunks xử lý trong một lượt (forward pass). Điều chỉnh theo dung lượng bộ nhớ VRAM của GPU hoặc RAM hệ thống. |
+| `--rebuild` | _(không có)_ | `False` | Cờ kích hoạt nhúng lại **toàn bộ 100%** bản ghi. Mặc định tắt (chỉ nhúng các chunk có `embedding IS NULL` để đảm bảo an toàn và khả năng chạy tiếp nối khi bị gián đoạn). |
+| _(trong `embedding.py`)_ | `use_fp16` | `True` (khi có CUDA) | Tự động sử dụng Float16 khi chạy trên GPU NVIDIA, tiết kiệm ~50% VRAM và tăng tốc inference đáng kể mà không ảnh hưởng chất lượng vector. Tự về `fp32` trên CPU. |
+| _(trong `embedding.py`)_ | `max_length` | `8192` | Giới hạn chiều dài ngữ cảnh token của BGE-M3. Đảm bảo các điều khoản dài của văn bản quy phạm pháp luật không bị cắt cụt (truncate). |
+
+#### 2. Tham số Chỉ mục Vector HNSW (pgvector)
+
+Chỉ mục HNSW được khởi tạo trong `init.sql`:
+```sql
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_hnsw_idx
+    ON legal_chunks USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 16, ef_construction = 64);
+```
+
+| Tham số | Giá trị hiện tại | Khoảng khuyến nghị | Ý nghĩa & Hướng dẫn tinh chỉnh |
+|---|:---:|:---:|---|
+| **Operator class** | `vector_cosine_ops` | Cosine / L2 / IP | Phép đo khoảng cách Cosine Distance ($1 - \text{cosine similarity}$). Tối ưu nhất cho các vector đã chuẩn hóa L2 của BGE-M3. |
+| **`m`** | `16` | `16` – `64` | Số liên kết tối đa trên mỗi node đồ thị HNSW. Tăng `m` giúp tăng độ chính xác tìm kiếm (recall) đối với dữ liệu lớn, đánh đổi bằng việc tốn thêm RAM/dung lượng đĩa. |
+| **`ef_construction`** | `64` | `64` – `200` | Kích thước hàng đợi ứng viên khi xây dựng đồ thị index. Tăng giá trị này giúp chất lượng đồ thị tốt hơn, thời gian tạo index ban đầu sẽ dài hơn một chút. |
+| **`hnsw.ef_search`** | `40` (mặc định) | `40` – `200` | Kích thước hàng đợi ứng viên lúc **truy vấn (Retrieval runtime)**. Có thể tinh chỉnh linh hoạt trong phiên kết nối (ví dụ: `SET hnsw.ef_search = 100;`) để nâng cao Recall khi truy xuất. |
+
+---
+
+### Hướng dẫn tùy biến và thay đổi tham số
+
+#### Tình huống 1: Điều chỉnh theo cấu hình phần cứng (Tránh lỗi OOM / Tăng tốc)
+- **Triệu chứng:** Gặp lỗi `CUDA out of memory` hoặc tiến trình chạy chậm do chưa tận dụng hết tài nguyên.
+- **Cách điều chỉnh:**
+  - **GPU 4GB – 6GB VRAM** (ví dụ RTX 3050 Laptop): Đặt batch size nhỏ từ `4` đến `8`:
+    ```powershell
+    python scripts/index_embeddings.py --batch-size 4
+    ```
+  - **GPU >= 8GB – 16GB VRAM**: Tăng batch size lên `16` – `32` để tối ưu thông lượng:
+    ```powershell
+    python scripts/index_embeddings.py --batch-size 16
+    ```
+  - **Cấu hình lâu dài trong `.env`**:
+    ```env
+    DATABASE_URL=postgresql://...
+    EMBEDDING_BATCH_SIZE=4
+    ```
+
+#### Tình huống 2: Thử nghiệm hoặc thay đổi mô hình Embedding khác
+Khi muốn chuyển sang một mô hình embedding khác (ví dụ mô hình tiếng Việt chuyên dụng hoặc mô hình nhẹ hơn):
+1. **Kiểm tra số chiều vector của mô hình mới:**
+   - Nếu mô hình mới có số chiều **khác 1024** (ví dụ `768` chiều):
+     ```powershell
+     # Xóa index HNSW cũ
+     psql --dbname "$env:DATABASE_URL" --command "DROP INDEX IF EXISTS legal_chunks_embedding_hnsw_idx;"
+     # Thay đổi kiểu cột embedding sang số chiều mới (ví dụ 768)
+     psql --dbname "$env:DATABASE_URL" --command "ALTER TABLE legal_chunks ALTER COLUMN embedding TYPE vector(768);"
+     ```
+   - Cập nhật hằng số `EMBEDDING_DIM = 768` trong `scripts/embedding.py` và `init.sql`.
+2. **Chạy nhúng lại toàn bộ với cờ `--rebuild`:**
+   ```powershell
+   python scripts/index_embeddings.py --rebuild --model "ten-to-chuc/ten-mo-hinh-moi" --batch-size 8
+   ```
+3. **Tạo lại chỉ mục HNSW tương ứng:**
+   ```powershell
+   psql --dbname "$env:DATABASE_URL" --command "CREATE INDEX legal_chunks_embedding_hnsw_idx ON legal_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
+   ```
+
+#### Tình huống 3: Nâng cao độ chính xác truy xuất (Retrieval Tuning)
+Khi bước sang giai đoạn Retrieval, nếu muốn ưu tiên độ chính xác tuyệt đối (Recall) thay vì tốc độ phản hồi cực đoan:
+- **Lúc tạo index:** Nâng `m` và `ef_construction`:
+  ```sql
+  DROP INDEX IF EXISTS legal_chunks_embedding_hnsw_idx;
+  CREATE INDEX legal_chunks_embedding_hnsw_idx
+      ON legal_chunks USING hnsw (embedding vector_cosine_ops)
+      WITH (m = 32, ef_construction = 128);
+  ```
+- **Lúc truy vấn runtime:** Tăng `ef_search` trước khi query câu hỏi của người dùng:
+  ```sql
+  SET hnsw.ef_search = 100;
+  -- Thực hiện truy vấn SELECT ... ORDER BY embedding <=> $query_vector LIMIT 5;
+  ```
+
+---
+
+### Xác minh kết quả indexing và chỉ mục vector
+
+Kiểm tra số lượng bản ghi đã nhúng, số chiều vector và sự hiện diện của chỉ mục HNSW:
+
+```powershell
+# 1. Kiểm tra tổng số chunk và số chunk đã có vector nhúng
+psql --dbname "$env:DATABASE_URL" --command "SELECT count(*) AS total, count(embedding) AS embedded FROM legal_chunks;"
+
+# 2. Kiểm tra số chiều thực tế của vector (kỳ vọng: 1024)
+psql --dbname "$env:DATABASE_URL" --command "SELECT chunk_id, vector_dims(embedding) AS dim FROM legal_chunks WHERE embedding IS NOT NULL LIMIT 3;"
+
+# 3. Kiểm tra chỉ mục HNSW đã được kích hoạt
+psql --dbname "$env:DATABASE_URL" --command "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = 'legal_chunks' AND indexname = 'legal_chunks_embedding_hnsw_idx';"
+```
+
+### Quan hệ dữ liệu
+
+```text
+documents
+    └── legal_chunks
+            ├── text               ← nội dung pháp lý gốc (không thay đổi)
+            ├── [metadata fields]  ← article, clause, authority_level, …
+            ├── search_vector      ← full-text index hiện có
+            └── embedding          ← ĐÃ HOÀN TẤT: vector 1024 chiều (BAAI/bge-m3)
+                                           ↓
+                                    legal_chunks_embedding_hnsw_idx
+                                    (HNSW, vector_cosine_ops)
+```
+
+### Chạy unit test
+
+```powershell
+conda activate chatbot
+python -m pytest tests/test_embedding.py -v
+```
+
+Toàn bộ test suite (16/16 test cases) xác minh tính toàn vẹn của logic nhúng, kiểm tra kích thước vector, xử lý batch và cơ chế tương thích schema.
+
+---
+
+## 13. Tiến trình dự án và Trạng thái phát triển
+
+| Giai đoạn | Nội dung | Trạng thái | Ghi chú |
+|---|---|:---:|---|
+| **1. Data Preparation & Import** | Thu thập, chuẩn hóa markdown, chunking và nạp vào PostgreSQL | ✅ Hoàn thành | 617 chunks pháp lý, quan hệ tham chiếu đầy đủ |
+| **2. Indexing / Vectorization** | Nhúng vector với `BAAI/bge-m3` (1024 dims), tạo HNSW index | ✅ Hoàn thành | 617/617 chunks đã nhúng (0 chunk lỗi), chạy trên GPU RTX 3050 |
+| **3. Retrieval & Re-ranking** | Hybrid search (kết hợp full-text search và cosine vector search) | 🔄 Kế hoạch tiếp theo | Sẵn sàng triển khai dựa trên HNSW index và search_vector |
+| **4. Generation & Synthesis** | Tích hợp LLM sinh câu trả lời trích dẫn điều khoản chính xác | ⏳ Dự kiến | Ưu tiên văn bản có hiệu lực và quan hệ sửa đổi bổ sung |
+| **5. Interface & Evaluation** | UI người dùng hỏi đáp và bộ dữ liệu đánh giá chất lượng RAG | ⏳ Dự kiến | |
+
