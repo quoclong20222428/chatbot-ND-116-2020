@@ -1,5 +1,15 @@
 """Generate and store BAAI/bge-m3 embeddings for all legal chunks in the database.
 
+Embedding representation
+------------------------
+For legal-document chunks (``content_type = 'legal_text'``) the text sent to
+BGE-M3 is a **structured prefix + original chunk text** built by
+:func:`embedding.build_embedding_text`.  The prefix encodes available
+structural metadata (document, chapter, article, clause, point) so that the
+generated vectors capture both semantic content and structural location.
+
+For QA chunks (``content_type = 'qa'``) the original text is used unchanged.
+
 Run from the repository root after activating the ``chatbot`` Conda environment::
 
     conda activate chatbot
@@ -11,9 +21,14 @@ is safe to interrupt and restart.  To regenerate all embeddings use
 
     python scripts/index_embeddings.py --rebuild
 
+To preview the embedding input for the first N chunks (no model, no DB write)::
+
+    python scripts/index_embeddings.py --preview --limit 5
+
 The script does NOT perform retrieval or LLM generation.  It only reads chunk
-text from the database, generates dense vectors with ``BAAI/bge-m3``, and
-writes those vectors back to ``legal_chunks.embedding``.
+metadata + text from the database, generates dense vectors with ``BAAI/bge-m3``
+using the metadata-aware representation, and writes those vectors back to
+``legal_chunks.embedding``.
 
 Environment variables
 ---------------------
@@ -23,7 +38,7 @@ DATABASE_URL
 EMBEDDING_MODEL
     Hugging Face model identifier (default: ``BAAI/bge-m3``).
 EMBEDDING_BATCH_SIZE
-    Number of chunks to embed per model forward pass (default: 32).
+    Number of chunks to embed per model forward pass (default: 8).
 """
 
 from __future__ import annotations
@@ -50,16 +65,34 @@ LOGGER = logging.getLogger("index_embeddings")
 # ---------------------------------------------------------------------------
 
 # Fetch chunks that still need an embedding.
+# Selects metadata columns needed by build_embedding_text() in addition to
+# the original chunk text.  No schema changes required.
 SELECT_UNEMBEDDED = """
-SELECT chunk_id, text
+SELECT
+    chunk_id,
+    text,
+    content_type,
+    document_title,
+    chapter,
+    article,
+    clause,
+    point
 FROM legal_chunks
 WHERE embedding IS NULL
 ORDER BY chunk_id
 """
 
-# Fetch ALL chunks (used with --rebuild).
+# Fetch ALL chunks (used with --rebuild or --preview).
 SELECT_ALL = """
-SELECT chunk_id, text
+SELECT
+    chunk_id,
+    text,
+    content_type,
+    document_title,
+    chapter,
+    article,
+    clause,
+    point
 FROM legal_chunks
 ORDER BY chunk_id
 """
@@ -142,20 +175,13 @@ def require_env() -> str:
     """Load configuration and return the database URL."""
     load_dotenv(ENV_PATH)
 
-    active_environment = os.environ.get("CONDA_DEFAULT_ENV")
-    if active_environment != "chatbot":
-        found = active_environment or "no active Conda environment"
-        raise RuntimeError(
-            f"Expected Conda environment 'chatbot' (found {found}). "
-            "Run: conda activate chatbot"
-        )
-
     database_url = os.environ.get("DATABASE_URL", "").strip()
     if not database_url:
         raise RuntimeError(
             f"DATABASE_URL is required; set it in the environment or {ENV_PATH.name}"
         )
     return database_url
+
 
 
 def connect_db(database_url: str) -> Any:
@@ -174,9 +200,32 @@ def connect_db(database_url: str) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def fetch_chunks(connection: Any, rebuild: bool) -> list[tuple[str, str]]:
-    """Return (chunk_id, text) pairs for chunks that need embedding."""
+# Row type returned by fetch_chunks:
+#   (chunk_id, text, content_type, document_title, chapter, article, clause, point)
+_ChunkRow = tuple[str, str, str | None, str | None, str | None, str | None, str | None, str | None]
+
+
+def fetch_chunks(connection: Any, rebuild: bool, limit: int | None = None) -> list[_ChunkRow]:
+    """Return chunk rows for chunks that need embedding.
+
+    Each row is an 8-tuple:
+    ``(chunk_id, text, content_type, document_title, chapter, article, clause, point)``
+
+    The metadata columns are used by :func:`embedding.build_embedding_text` to
+    construct the structured embedding input for legal-document chunks.
+
+    Parameters
+    ----------
+    connection:
+        Open psycopg (v3) connection.
+    rebuild:
+        When ``True``, fetch all chunks regardless of existing embeddings.
+    limit:
+        Optional maximum number of rows to return (used by ``--preview``).
+    """
     sql = SELECT_ALL if rebuild else SELECT_UNEMBEDDED
+    if limit is not None:
+        sql = sql.rstrip() + f"\nLIMIT {int(limit)}"
     with connection.cursor() as cursor:
         cursor.execute(sql)
         return cursor.fetchall()
@@ -185,10 +234,15 @@ def fetch_chunks(connection: Any, rebuild: bool) -> list[tuple[str, str]]:
 def index_chunks(
     database_url: str,
     model: Any,
-    chunks: list[tuple[str, str]],
+    chunks: list[_ChunkRow],
     batch_size: int,
 ) -> IndexStats:
     """Embed chunks in batches and persist each embedding via a short-lived connection.
+
+    For each chunk the embedding input is built by
+    :func:`embedding.build_embedding_text`, which prepends a structured
+    metadata prefix for legal-document chunks (``content_type = 'legal_text'``).
+    QA chunks are embedded using their original text unchanged.
 
     Strategy: the connection is opened *only* during the DB write phase, not
     during model inference.  This prevents NeonDB (and any cloud PostgreSQL
@@ -196,12 +250,15 @@ def index_chunks(
     connection while the CPU is running a multi-minute embedding forward pass.
 
     Each batch therefore follows:
-        1. Embed texts  (model inference — potentially minutes on CPU, no DB needed)
-        2. Open fresh connection
-        3. UPDATE legal_chunks … for each chunk in batch
-        4. COMMIT
-        5. Close connection
+        1. Build metadata-aware embedding inputs (no model, no DB)
+        2. Embed texts  (model inference — potentially minutes on CPU, no DB needed)
+        3. Open fresh connection
+        4. UPDATE legal_chunks … for each chunk in batch
+        5. COMMIT
+        6. Close connection
     """
+    from embedding import build_embedding_text  # noqa: PLC0415
+
     stats = IndexStats(total_to_embed=len(chunks))
     total_batches = (len(chunks) + batch_size - 1) // batch_size
 
@@ -214,11 +271,24 @@ def index_chunks(
         LOGGER.info("Processing batch %d/%d (%d chunks)", batch_num, total_batches, len(batch))
 
         chunk_ids = [row[0] for row in batch]
-        texts = [row[1] for row in batch]
 
-        # --- Step 1: Embed (no DB connection held open during inference) ---
+        # --- Step 1: Build metadata-aware embedding inputs ---
+        embedding_inputs: list[str] = []
+        for row in batch:
+            chunk_id, text, content_type, document_title, chapter, article, clause, point = row
+            meta = {
+                "content_type": content_type,
+                "document_title": document_title,
+                "chapter": chapter,
+                "article": article,
+                "clause": clause,
+                "point": point,
+            }
+            embedding_inputs.append(build_embedding_text(text, meta))
+
+        # --- Step 2: Embed (no DB connection held open during inference) ---
         try:
-            vectors = model.embed_texts(texts, batch_size=len(texts))
+            vectors = model.embed_texts(embedding_inputs, batch_size=len(embedding_inputs))
         except Exception as exc:
             LOGGER.error(
                 "Embedding failed for batch %d/%d: %s — marking %d chunks as failed",
@@ -231,7 +301,7 @@ def index_chunks(
             stats.failed_chunk_ids.extend(chunk_ids)
             continue
 
-        # --- Step 2: Write to DB (fresh short-lived connection) ---
+        # --- Step 3: Write to DB (fresh short-lived connection) ---
         try:
             with connect_db(database_url) as conn:
                 with conn.cursor() as cursor:
@@ -324,6 +394,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Re-embed ALL chunks, not just those with embedding IS NULL.",
     )
     parser.add_argument(
+        "--preview",
+        action="store_true",
+        default=False,
+        help=(
+            "Fetch chunks from the DB, print the embedding input for each, "
+            "and exit WITHOUT calling BGE-M3 or writing any embeddings."
+        ),
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=5,
+        metavar="N",
+        help="Maximum number of chunks to preview (default: 5, only used with --preview).",
+    )
+    parser.add_argument(
         "--batch-size",
         type=int,
         default=int(os.environ.get("EMBEDDING_BATCH_SIZE", "8")),
@@ -343,12 +429,71 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def run_preview(database_url: str, limit: int) -> int:
+    """Fetch the first *limit* chunks and print their embedding inputs.
+
+    Does NOT load BGE-M3.  Does NOT write any embeddings.  Safe to run at
+    any time to inspect what the metadata-aware representation will look like
+    before committing to a full rebuild.
+    """
+    # Ensure scripts/ is on sys.path so embedding is importable.
+    scripts_dir = Path(__file__).parent
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from embedding import build_embedding_text  # noqa: PLC0415
+
+    with connect_db(database_url) as conn:
+        rows = fetch_chunks(conn, rebuild=True, limit=limit)
+
+    if not rows:
+        print("No chunks found in the database.")
+        return 0
+
+    total = len(rows)
+    print(f"Previewing embedding input for {total} chunk(s):\n")
+    sep = "-" * 60
+
+    for i, row in enumerate(rows, 1):
+        chunk_id, text, content_type, document_title, chapter, article, clause, point = row
+        meta = {
+            "content_type": content_type,
+            "document_title": document_title,
+            "chapter": chapter,
+            "article": article,
+            "clause": clause,
+            "point": point,
+        }
+        emb_input = build_embedding_text(text, meta)
+
+        print(sep)
+        print(f"Chunk {i}/{total}")
+        print(f"  chunk_id:      {chunk_id}")
+        print(f"  content_type:  {content_type}")
+        print(f"  document:      {document_title}")
+        print(f"  chapter:       {chapter}")
+        print(f"  article:       {article}")
+        print(f"  clause:        {clause}")
+        print(f"  point:         {point}")
+        print()
+        print("Embedding input:")
+        print(emb_input)
+        print()
+
+    print(sep)
+    print("Preview complete — no embeddings were generated or written.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_logging()
     args = parse_args(argv)
 
     try:
         database_url = require_env()
+
+        # --preview: no model loaded, no embeddings written.
+        if args.preview:
+            return run_preview(database_url, limit=args.limit)
 
         batch_size = args.batch_size
         model_name = args.model
@@ -427,3 +572,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

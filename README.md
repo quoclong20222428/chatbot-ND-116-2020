@@ -439,13 +439,141 @@ Toàn bộ test suite (16/16 test cases) xác minh tính toàn vẹn của logic
 
 ---
 
-## 13. Tiến trình dự án và Trạng thái phát triển
+## 13. Giai đoạn 3: Retrieval (Vector Baseline)
+
+Giai đoạn này triển khai nền tảng truy xuất vector: nhận câu hỏi tự nhiên, chuyển thành vector 1024 chiều bằng `BAAI/bge-m3`, và tìm kiếm cosine similarity qua chỉ mục HNSW trên PostgreSQL + pgvector.
+
+> **Phạm vi của milestone này:** chỉ Vector Retrieval thuần túy.  
+> Hybrid Retrieval, RRF, Re-ranking, LLM Generation và Frontend là các bước tiếp theo.
+
+### Kiến trúc Retrieval
+
+```text
+Câu hỏi pháp lý (tiếng Việt)
+          ↓
+       BGE-M3
+    (BAAI/bge-m3)
+          ↓
+   Vector 1024 chiều
+          ↓
+  PostgreSQL + pgvector
+   (cosine distance <=>)
+          ↓
+    HNSW index search
+          ↓
+   Top-K chunks (có điểm similarity)
+```
+
+### Module mới
+
+```text
+scripts/
+├── retrieval.py       ← module retrieval chính: Retriever + RetrievalResult
+├── test_retrieval.py  ← script đánh giá thực tế với 15 câu hỏi pháp lý
+tests/
+└── test_retrieval.py  ← bộ unit test (38 test cases, không cần DB thật)
+```
+
+### Chạy retrieval đánh giá (yêu cầu DATABASE_URL)
+
+```powershell
+# Chạy toàn bộ 15 câu hỏi đánh giá mặc định (top-5)
+python scripts/test_retrieval.py
+
+# Tuỳ chỉnh top-K và ef_search
+python scripts/test_retrieval.py --top-k 10 --ef-search 80
+
+# Câu hỏi tuỳ chọn (ad-hoc)
+python scripts/test_retrieval.py --query "Điều kiện để được hưởng chính sách hỗ trợ là gì?"
+```
+
+### Sử dụng trong code
+
+```python
+from scripts.retrieval import Retriever
+
+retriever = Retriever()   # tải BGE-M3 một lần
+results = retriever.retrieve(
+    "Điều kiện để được hưởng chính sách hỗ trợ là gì?",
+    top_k=5,
+)
+for r in results:
+    print(r.chunk_id, f"{r.score:.4f}", r.metadata["article"])
+    print(r.text[:200])
+```
+
+### Cấu trúc kết quả
+
+```python
+@dataclass
+class RetrievalResult:
+    chunk_id: str          # khoá chính trong legal_chunks
+    text:     str          # nội dung pháp lý
+    score:    float        # cosine similarity (giá trị lớn hơn = liên quan hơn)
+    metadata: dict         # document_id, document_title, document_number,
+                           # source_type, document_role, authority_level,
+                           # retrieval_priority, article, clause, point,
+                           # content_type
+```
+
+### Các tham số cấu hình
+
+| Tham số | Mặc định | Mô tả |
+|---|:---:|---|
+| `top_k` | `5` | Số chunk trả về. Phải là số nguyên dương ≤ 1000. |
+| `ef_search` | `40` | HNSW ef_search — tăng để nâng recall, giảm tốc độ. Phạm vi khuyến nghị: 40–200. |
+
+`ef_search` được thiết lập mỗi kết nối bằng `SELECT set_config('hnsw.ef_search', ..., true)` (transaction-scoped, không ảnh hưởng phiên khác).
+
+### Chiến lược kết nối (NeonDB-safe)
+
+Kế thừa đúng pattern từ `index_embeddings.py`:
+
+```text
+1. embed_texts([query])   ← không có DB connection
+2. with connect(url) as conn:   ← kết nối ngắn hạn
+3.     set_config ef_search
+4.     SELECT ... ORDER BY embedding <=> vector LIMIT k
+5. # connection tự đóng
+```
+
+Embedding model (`BGE-M3`) được nạp **một lần** khi khởi tạo `Retriever`, không nạp lại theo từng truy vấn.
+
+### Chạy unit test
+
+```powershell
+python -m pytest tests/ -v
+```
+
+Kết quả kỳ vọng: **38/38 passed** (16 test embedding + 22 test retrieval), không cần DB thật hay tải model.
+
+### Xác minh trạng thái database (read-only)
+
+```python
+retriever = Retriever()
+state = retriever.verify_database_state()
+print(state)
+# {'total_chunks': 617, 'embedded_chunks': 617,
+#  'missing_embeddings': 0, 'hnsw_index_exists': True}
+```
+
+Phương thức này chỉ đọc — **không sửa đổi embedding hay index**.
+
+### Giới hạn đã biết và bước tiếp theo
+
+- Milestone này chỉ là **Vector Retrieval baseline**. Chất lượng truy xuất cần được đánh giá thủ công bằng `test_retrieval.py`.
+- **Chưa triển khai**: Hybrid Retrieval (kết hợp BM25 / Full-text search), RRF, Cross-encoder Re-ranking, LLM Generation.
+- Bước tiếp theo khuyến nghị: đánh giá chất lượng retrieval baseline → Hybrid Retrieval → Re-ranking.
+
+---
+
+## 14. Tiến trình dự án và Trạng thái phát triển
 
 | Giai đoạn | Nội dung | Trạng thái | Ghi chú |
 |---|---|:---:|---|
 | **1. Data Preparation & Import** | Thu thập, chuẩn hóa markdown, chunking và nạp vào PostgreSQL | ✅ Hoàn thành | 617 chunks pháp lý, quan hệ tham chiếu đầy đủ |
 | **2. Indexing / Vectorization** | Nhúng vector với `BAAI/bge-m3` (1024 dims), tạo HNSW index | ✅ Hoàn thành | 617/617 chunks đã nhúng (0 chunk lỗi), chạy trên GPU RTX 3050 |
-| **3. Retrieval & Re-ranking** | Hybrid search (kết hợp full-text search và cosine vector search) | 🔄 Kế hoạch tiếp theo | Sẵn sàng triển khai dựa trên HNSW index và search_vector |
-| **4. Generation & Synthesis** | Tích hợp LLM sinh câu trả lời trích dẫn điều khoản chính xác | ⏳ Dự kiến | Ưu tiên văn bản có hiệu lực và quan hệ sửa đổi bổ sung |
-| **5. Interface & Evaluation** | UI người dùng hỏi đáp và bộ dữ liệu đánh giá chất lượng RAG | ⏳ Dự kiến | |
-
+| **3. Retrieval – Vector Baseline** | BGE-M3 query embedding + cosine vector search (HNSW) | ✅ Hoàn thành | `retrieval.py` + 22 unit tests (38 total). Hybrid search & re-ranking là bước tiếp theo. |
+| **4. Retrieval – Hybrid & Re-ranking** | Full-text search + vector fusion (RRF), cross-encoder re-ranking | 🔄 Kế hoạch tiếp theo | Cơ sở `search_vector` và HNSW index đã sẵn sàng |
+| **5. Generation & Synthesis** | Tích hợp LLM sinh câu trả lời trích dẫn điều khoản chính xác | ⏳ Dự kiến | Ưu tiên văn bản có hiệu lực và quan hệ sửa đổi bổ sung |
+| **6. Interface & Evaluation** | UI người dùng hỏi đáp và bộ dữ liệu đánh giá chất lượng RAG | ⏳ Dự kiến | |

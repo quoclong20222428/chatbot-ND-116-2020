@@ -7,12 +7,31 @@ This module is intentionally kept free of database logic so that the same
 ``EmbeddingModel`` class can be reused by both the indexing stage
 (``index_embeddings.py``) and the future retrieval stage (query embedding).
 
+The module also exposes :func:`build_embedding_text`, which constructs the
+actual string sent to BGE-M3 for each chunk.  For legal-document chunks
+(``content_type == 'legal_text'``) the string is a structured prefix
+combining available metadata with the original chunk text.  For QA chunks
+the original text is returned unchanged.
+
 Usage::
 
-    from embedding import EmbeddingModel
+    from embedding import EmbeddingModel, build_embedding_text
 
     model = EmbeddingModel()                      # loads BAAI/bge-m3 once
     vectors = model.embed_texts(["Điều 1 ..."])   # list[list[float]]
+
+    # Build the embedding input for a legal chunk:
+    emb_input = build_embedding_text(
+        text="Mức hỗ trợ tiền đóng học phí...",
+        metadata={
+            "content_type": "legal_text",
+            "document_title": "Nghị định 116/2020/NĐ-CP",
+            "chapter": "Chương II",
+            "article": "Điều 4",
+            "clause": "Khoản 1",
+            "point": None,
+        },
+    )
 
 Environment variables
 ---------------------
@@ -35,10 +54,91 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_MODEL = "BAAI/bge-m3"
 EMBEDDING_DIM = 1024  # Dense output dimension of BAAI/bge-m3.
 
+# Ordered sequence of (label, metadata_key) pairs for legal-document chunks.
+# Only fields whose values are non-NULL and non-empty are included.
+_LEGAL_META_FIELDS: tuple[tuple[str, str], ...] = (
+    ("[Document]",  "document_title"),
+    ("[Chapter]",   "chapter"),
+    ("[Article]",   "article"),
+    ("[Clause]",    "clause"),
+    ("[Point]",     "point"),
+)
+
 
 # ---------------------------------------------------------------------------
-# EmbeddingModel
+# Embedding-input formatter
 # ---------------------------------------------------------------------------
+
+
+def build_embedding_text(text: str, metadata: dict) -> str:
+    """Build the string sent to BGE-M3 for a single chunk.
+
+    For legal-document chunks (``content_type == 'legal_text'``) a structured
+    prefix is prepended to the original chunk text.  The prefix encodes
+    available structural metadata in a deterministic, hierarchical order::
+
+        [Document]
+        <document_title>
+
+        [Chapter]
+        <chapter>
+
+        [Article]
+        <article>
+
+        [Clause]
+        <clause>
+
+        [Point]
+        <point>
+
+        [Content]
+        <original chunk text>
+
+    Only fields whose values are non-``None`` and non-empty after stripping
+    are included.  ``None``, empty strings, and whitespace-only strings are
+    silently omitted — no placeholder text (``'N/A'``, ``'NULL'``, ``'None'``)
+    is ever inserted.
+
+    For QA chunks (``content_type == 'qa'``) the original ``text`` is
+    returned unchanged.  Legal references that appear *inside* QA answer text
+    are never converted into structural metadata fields.
+
+    The function is **deterministic**: identical inputs always produce
+    identical outputs.
+
+    Parameters
+    ----------
+    text:
+        Original chunk text from ``legal_chunks.text``.  Returned verbatim
+        as the ``[Content]`` section (or the full output for QA chunks).
+    metadata:
+        Dictionary of chunk metadata.  Only the following keys are
+        inspected: ``content_type``, ``document_title``, ``chapter``,
+        ``article``, ``clause``, ``point``.
+        Extra keys are ignored; missing keys are treated as ``None``.
+
+    Returns
+    -------
+    str
+        The final string to pass to ``EmbeddingModel.embed_texts()``.
+    """
+    content_type = (metadata.get("content_type") or "").strip().lower()
+    if content_type != "legal_text":
+        # QA chunks and any unrecognised type: return text unchanged.
+        return text
+
+    # Build the structured prefix for legal-document chunks.
+    parts: list[str] = []
+    for label, key in _LEGAL_META_FIELDS:
+        value = (metadata.get(key) or "").strip()
+        if value:
+            parts.append(f"{label}\n{value}")
+
+    # Always append the original content under [Content].
+    parts.append(f"[Content]\n{text}")
+
+    return "\n\n".join(parts)
 
 
 class EmbeddingModel:
@@ -66,6 +166,7 @@ class EmbeddingModel:
             or DEFAULT_MODEL
         )
         self._use_fp16 = use_fp16
+        self._device: str = ""   # populated by _load_model
         self._model = self._load_model()
 
     # ------------------------------------------------------------------
@@ -79,6 +180,11 @@ class EmbeddingModel:
     @property
     def embedding_dim(self) -> int:
         return EMBEDDING_DIM
+
+    @property
+    def device(self) -> str:
+        """Compute device selected at model-load time: ``'cuda'`` or ``'cpu'``."""
+        return self._device
 
     # ------------------------------------------------------------------
     # Public API
@@ -140,6 +246,7 @@ class EmbeddingModel:
             ) from exc
 
         device = self._detect_device()
+        self._device = device          # expose via the .device property
         use_fp16 = self._use_fp16 and (device == "cuda")
 
         LOGGER.info("Embedding model: %s", self._model_name)
