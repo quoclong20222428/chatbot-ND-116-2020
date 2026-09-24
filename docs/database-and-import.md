@@ -9,7 +9,7 @@ Tài liệu này mô tả schema cơ sở dữ liệu PostgreSQL, quy trình imp
 Schema PostgreSQL được định nghĩa đầy đủ trong `init.sql`. File này là nguồn sự thật cho toàn bộ cấu trúc bảng, quan hệ, index và extension.
 
 Các extension PostgreSQL được tạo tự động nếu chưa tồn tại:
-- `pg_trgm` — hỗ trợ tìm kiếm toàn văn (full-text search) với trigram
+- `pg_trgm` — hỗ trợ tìm kiếm trigram (trigram search)
 - `pgvector` — hỗ trợ lưu trữ và tìm kiếm vector nhúng
 
 **Quan hệ dữ liệu hiện tại:**

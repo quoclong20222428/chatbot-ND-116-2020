@@ -52,6 +52,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+from secrets import randbelow
 
 # ---------------------------------------------------------------------------
 # Make scripts/ importable
@@ -799,20 +800,20 @@ def run_evaluation(
             print("  (no results returned)")
             continue
 
-        for rank_idx, r in enumerate(rec.results, start=1):
-            meta = r.metadata or {}
-            if not eq.requires_verification and eq.expected_sections:
-                is_match = _is_ground_truth_match(meta, eq.expected_sections)
-                match_str = "YES" if is_match else "NO"
-            else:
-                match_str = "N/A"
-            if _is_legal_source(meta):
-                loc = _format_location(meta)
-                loc_str = f" ({loc})" if loc else ""
-                print(f"  Rank {rank_idx:2d}: [{r.score:.6f}] {r.chunk_id}{loc_str} [Match: {match_str}]")
-            else:
-                print(f"  Rank {rank_idx:2d}: [{r.score:.6f}] {r.chunk_id} [Source: QA] [Match: {match_str}]")
-            print(f"          Preview: {_truncate(r.text, 180)}")
+        # for rank_idx, r in enumerate(rec.results, start=1):
+        #     meta = r.metadata or {}
+        #     if not eq.requires_verification and eq.expected_sections:
+        #         is_match = _is_ground_truth_match(meta, eq.expected_sections)
+        #         match_str = "YES" if is_match else "NO"
+        #     else:
+        #         match_str = "N/A"
+        #     if _is_legal_source(meta):
+        #         loc = _format_location(meta)
+        #         loc_str = f" ({loc})" if loc else ""
+        #         print(f"  Rank {rank_idx:2d}: [{r.score:.6f}] {r.chunk_id}{loc_str} [Match: {match_str}]")
+        #     else:
+        #         print(f"  Rank {rank_idx:2d}: [{r.score:.6f}] {r.chunk_id} [Source: QA] [Match: {match_str}]")
+        #     print(f"          Preview: {_truncate(r.text, 180)}")
 
         has_gt = bool(eq.expected_sections) and not eq.requires_verification
         if has_gt:
@@ -1329,13 +1330,19 @@ def main(argv: list[str] | None = None) -> int:
     start_time = datetime.now()
     cli_args_str = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(default arguments)"
 
+    # logs_dir = ROOT / "logs"
+    # logs_dir.mkdir(parents=True, exist_ok=True)
+    # timestamp = start_time.strftime("%Y-%m-%d_%H-%M-%S")
+    # log_path = logs_dir / f"retrieval_{timestamp}.txt"
+    # if log_path.exists():
+    #     timestamp = start_time.strftime("%Y-%m-%d_%H-%M-%S_%f")
+    #     log_path = logs_dir / f"retrieval_{timestamp}.txt"
+
+    start_time = datetime.now()
+    cli_args_str = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "(default arguments)"
+
     logs_dir = ROOT / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = start_time.strftime("%Y-%m-%d_%H-%M-%S")
-    log_path = logs_dir / f"retrieval_{timestamp}.txt"
-    if log_path.exists():
-        timestamp = start_time.strftime("%Y-%m-%d_%H-%M-%S_%f")
-        log_path = logs_dir / f"retrieval_{timestamp}.txt"
 
     gpu_name, cuda_ver, torch_ver = _get_env_versions()
 
@@ -1366,6 +1373,27 @@ def main(argv: list[str] | None = None) -> int:
         "model_name",
         getattr(retriever._embedding_model, "model_name", "BAAI/bge-m3"),
     )
+
+    # Build a filesystem-safe model name.
+    safe_model_name = model_name.replace("/", "_").replace("\\", "_")
+    safe_model_name = "_".join(safe_model_name.split())
+
+    # Filename format:
+    # <model_name>_<runtime>_<4-digit-random>.txt
+    timestamp = start_time.strftime("%Y-%m-%d_%H-%M-%S")
+    random_suffix = f"{randbelow(10000):04d}"
+
+    log_path = logs_dir / (
+        f"{safe_model_name}_{timestamp}_{random_suffix}.txt"
+    )
+
+    # Extremely unlikely collision protection.
+    while log_path.exists():
+        random_suffix = f"{randbelow(10000):04d}"
+        log_path = logs_dir / (
+            f"{safe_model_name}_{timestamp}_{random_suffix}.txt"
+        )
+
     embedding_dim = getattr(retriever._embedding_model, "embedding_dim", 1024)
     device = retriever.device
     model_revision = _get_model_revision(retriever)

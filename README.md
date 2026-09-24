@@ -31,7 +31,7 @@ retrieval.py          →  Vector similarity search (cosine, pgvector)
 | Cơ sở dữ liệu | PostgreSQL + pgvector |
 | Mô hình nhúng | `BAAI/bge-m3` (vector 1024 chiều, hỗ trợ tiếng Việt) |
 | Chỉ mục vector | HNSW — Hierarchical Navigable Small World: cấu trúc chỉ mục tìm kiếm vector tương đồng nhanh |
-| Tìm kiếm toàn văn | `pg_trgm` (đã có sẵn trong schema) |
+| Tìm kiếm Trigram | `pg_trgm` (đã có sẵn trong schema) |
 | Ngôn ngữ | Python (môi trường Conda `chatbot`) |
 | Kết nối DB | `psycopg` / `psycopg2` |
 
@@ -48,8 +48,9 @@ retrieval.py          →  Vector similarity search (cosine, pgvector)
 | Chỉ mục HNSW (`vector_cosine_ops`, m=16, ef_construction=64) | ✅ Hoàn thành |
 | Module Vector Retrieval (`retrieval.py`) | ✅ Hoàn thành |
 | Đánh giá Retrieval (15 câu hỏi, ground truth phân cấp) | ✅ Hoàn thành |
-| Bộ kiểm thử tự động — 239/239 tests passed | ✅ Hoàn thành |
-| Nhúng tài liệu nhận biết siêu dữ liệu (Metadata-aware) | ✅ Giai đoạn hiện tại |
+| Bộ kiểm thử tự động — 300/300 tests passed (91 embedding + 209 retrieval) | ✅ Hoàn thành |
+| Nhúng tài liệu nhận biết siêu dữ liệu (Metadata-aware) | ✅ Hoàn thành |
+| Đánh giá so sánh 5 mô hình embedding | ✅ Hoàn thành |
 
 ---
 
@@ -62,6 +63,7 @@ Tầng Retrieval hiện dùng **metadata-aware document embedding**: mỗi đo�
 [Chapter]  <chapter>
 [Article]  <article>
 [Clause]   <clause>
+[Point]    <point>
 [Content]  <nội dung gốc>
 ```
 
@@ -71,19 +73,23 @@ Chi tiết đầy đủ: [Lịch sử phát triển Retrieval](docs/retrieval-de
 
 ## Kết quả đánh giá Retrieval
 
-Đo lường trên 15 câu hỏi pháp lý, top-10, `ef_search=80`, metadata-aware embedding:
+Đánh giá thực hiện trên **15 câu hỏi pháp lý**, top-10, `ef_search=80`, metadata-aware embedding. Năm mô hình đã được tích hợp và đánh giá thành công.
 
-| Chỉ số | Baseline (text-only) | Hiện tại (metadata-aware) |
-|---|---:|---:|
-| Hit@3 | 0.400 | **0.467** |
-| Hit@5 | 0.400 | **0.533** |
-| Hit@10 | 0.667 | **0.733** |
-| Recall@3 | 0.333 | **0.400** |
-| Recall@5 | 0.333 | **0.467** |
-| Recall@10 | 0.600 | **0.667** |
-| MRR | 0.389 | **0.430** |
+| Mô hình | Emb. time | Hit@3 | Hit@5 | Hit@10 | Recall@3 | Recall@5 | Recall@10 | MRR |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `BAAI/bge-m3` | 37.5s | **46.7%** | **53.3%** | **73.3%** | **40.0%** | **46.7%** | **66.7%** | **0.430** |
+| `mainguyen9/vietlegal-e5` | 52.6s | 33.3% | 40.0% | 53.3% | 33.3% | 36.7% | 50.0% | 0.278 |
+| `mainguyen9/vietlegal-harrier-0.6b` | 45.9s | 20.0% | 40.0% | 66.7% | 20.0% | 40.0% | 66.7% | 0.275 |
+| `darklethelong/vnlegal-lal` | 40.3s | 26.7% | 26.7% | 33.3% | 26.7% | 26.7% | 33.3% | 0.274 |
+| `jinaai/jina-embeddings-v3-hf` | 38.6s | 20.0% | 26.7% | 33.3% | 20.0% | 26.7% | 33.3% | 0.188 |
 
-> Bộ đánh giá 15 câu hỏi phục vụ so sánh kỹ thuật trong giai đoạn phát triển. Các chỉ số không nên được hiểu là độ chính xác câu trả lời cuối cùng hay hiệu năng tổng quát trên diện rộng.
+**Nhận xét chính:**
+- Trong phạm vi tập đánh giá hiện tại, `BAAI/bge-m3` đạt kết quả truy xuất tổng thể cao nhất trong số năm mô hình được đánh giá, đặc biệt ở Recall@K và MRR.
+- `mainguyen9/vietlegal-harrier-0.6b` đạt Recall@10 tương đương BGE-M3 (66.7%), nhưng MRR thấp hơn, cho thấy các kết quả liên quan có xu hướng xuất hiện ở vị trí thấp hơn trong danh sách.
+- Các giá trị similarity không thể so sánh trực tiếp giữa các mô hình khác nhau — ưu tiên dùng Recall@K / Hit@K / MRR để so sánh mô hình.
+- **`dxtech-asia/deepx-embedding-v1` (DeepX) chưa được tích hợp thành công và bị loại khỏi bảng so sánh hiện tại.**
+
+> Bộ đánh giá 15 câu hỏi phục vụ so sánh kỹ thuật trong giai đoạn phát triển. Các chỉ số không nên được hiểu là độ chính xác câu trả lời cuối cùng hay hiệu năng tổng quát trên diện rộng. Chi tiết: [Đánh giá Retrieval](docs/retrieval-evaluation.md).
 
 ---
 
@@ -108,7 +114,8 @@ tests/
 ├── test_embedding.py        ← 30 unit tests
 └── test_retrieval.py        ← 209 unit tests
 logs/
-└── retrieval_*.txt          ← báo cáo đánh giá kèm nhãn thời gian
+├── retrieval_*.txt          ← báo cáo đánh giá kèm nhãn thời gian
+└── <model>_<timestamp>.txt  ← báo cáo benchmark từng mô hình embedding
 data/
 ├── markdown/
 ├── raw/

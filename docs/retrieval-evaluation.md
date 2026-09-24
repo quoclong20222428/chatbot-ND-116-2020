@@ -63,42 +63,56 @@ Nếu ground truth chỉ chỉ định `article` (không ràng buộc `clause` h
 
 | Cấu hình | Giá trị |
 |---|---|
-| Mô hình nhúng | `BAAI/bge-m3` |
-| Số chiều vector | 1024 |
-| Phương pháp truy xuất | Tìm kiếm độ tương đồng vector (Vector similarity search) |
-| Chỉ mục | HNSW (`vector_cosine_ops`) |
-| `ef_search` | 80 |
-| `top_k` đánh giá | 10 |
 | Số lượng câu hỏi đánh giá | 15 câu |
 | Số chunk đã nhúng | 617 / 617 |
 | Tỷ lệ phủ nhúng | 100% |
-| Biểu diễn tài liệu | Nhận biết siêu dữ liệu (Metadata-aware) |
+| Số chiều vector | 1024 |
+| Phương pháp truy xuất | Vector similarity search (cosine) |
+| Chỉ mục | HNSW (`vector_cosine_ops`) |
+| `ef_search` | 80 |
+| `top_k` đánh giá | 10 |
+| Biểu diễn tài liệu | Metadata-aware |
 | Biến đổi câu hỏi | Không (None) |
+| Ground truth matching | Hierarchical: Document → Article → Clause → Point |
 
 ---
 
-## Kết quả đo lường (Metadata-aware, top-10, ef_search=80)
+## Benchmark so sánh mô hình embedding
 
-```text
-Hit@3:     0.467
-Hit@5:     0.533
-Hit@10:    0.733
+Năm mô hình embedding đã được tích hợp và đánh giá thành công với cùng cấu hình truy xuất và cùng bộ câu hỏi đánh giá.
 
-Recall@3:  0.400
-Recall@5:  0.467
-Recall@10: 0.667
+> **Lưu ý về DeepX:** `dxtech-asia/deepx-embedding-v1` (DeepX) là mô hình thứ sáu được xem xét, nhưng **chưa được tích hợp thành công** vào hệ thống đánh giá. Do đó, DeepX không xuất hiện trong bảng so sánh dưới đây. Xem thêm: [DeepX Embedding Backend](deepx-backend.md).
 
-MRR:       0.430
+### Kết quả tổng hợp
 
-Độ tương đồng top-1 trung bình:               0.682
-Độ tương đồng điểm liên quan nhất trung bình: 0.652
-```
+| Mô hình | Emb. time | Hit@3 | Hit@5 | Hit@10 | Recall@3 | Recall@5 | Recall@10 | MRR |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `BAAI/bge-m3` | 37.49s | **46.7%** | **53.3%** | **73.3%** | **40.0%** | **46.7%** | **66.7%** | **0.430** |
+| `mainguyen9/vietlegal-e5` | 52.60s | 33.3% | 40.0% | 53.3% | 33.3% | 36.7% | 50.0% | 0.278 |
+| `mainguyen9/vietlegal-harrier-0.6b` | 45.87s | 20.0% | 40.0% | 66.7% | 20.0% | 40.0% | 66.7% | 0.275 |
+| `darklethelong/vnlegal-lal` | 40.27s | 26.7% | 26.7% | 33.3% | 26.7% | 26.7% | 33.3% | 0.274 |
+| `jinaai/jina-embeddings-v3-hf` | 38.62s | 20.0% | 26.7% | 33.3% | 20.0% | 26.7% | 33.3% | 0.188 |
+
+### Chỉ số similarity chẩn đoán
+
+Bảng dưới đây ghi lại giá trị similarity trung bình từ các lần chạy benchmark. Lưu ý rằng thang đo similarity **khác nhau giữa các mô hình** và không thể so sánh trực tiếp.
+
+| Mô hình | Avg top-1 similarity | Avg best relevant similarity |
+|---|---:|---:|
+| `BAAI/bge-m3` | 0.6821 | 0.6523 |
+| `mainguyen9/vietlegal-e5` | 0.6743 | 0.5672 |
+| `mainguyen9/vietlegal-harrier-0.6b` | 0.5495 | 0.5108 |
+| `darklethelong/vnlegal-lal` | 0.9283 | 0.9262 |
+| `jinaai/jina-embeddings-v3-hf` | 0.7059 | 0.7183 |
+
+> **Avg top-1 similarity**: Trung bình điểm tương đồng của kết quả được xếp hạng cao nhất trên tất cả các truy vấn.
+> **Avg best relevant similarity**: Trung bình điểm tương đồng của chunk liên quan nhất được tìm thấy (nếu có) trên tất cả các truy vấn.
 
 ---
 
-## So sánh với Baseline văn bản thuần
+## So sánh với Baseline văn bản thuần (BGE-M3)
 
-| Chỉ số | Baseline văn bản thuần | Hiện tại (Metadata-aware) | Mức thay đổi |
+| Chỉ số | Baseline văn bản thuần | Metadata-aware (BGE-M3) | Mức thay đổi |
 |---|---:|---:|---:|
 | Hit@3 | 0.400 | 0.467 | +0.067 |
 | Hit@5 | 0.400 | 0.533 | +0.133 |
@@ -112,19 +126,25 @@ MRR:       0.430
 
 ## Diễn giải kết quả
 
-Sự cải thiện khi bổ sung siêu dữ liệu cấu trúc vào vector nhúng thể hiện rõ rệt nhất ở **top-3 và top-5** — những vị trí quan trọng nhất đối với người dùng hoặc mô hình sinh ngôn ngữ (LLM) vốn chỉ tổng hợp câu trả lời từ các kết quả hàng đầu. Các đoạn trích pháp lý phù hợp xuất hiện ở những vị trí đầu bảng thường xuyên hơn so với baseline văn bản thuần. Chỉ số Recall@10 và MRR cũng đều có sự cải thiện tích cực.
+Trong tập đánh giá gồm 15 truy vấn và với cùng cấu hình truy xuất có sử dụng metadata-aware embedding, `BAAI/bge-m3` đạt kết quả truy xuất tổng thể cao nhất trong số năm mô hình được đánh giá, đặc biệt ở Recall@K và MRR.
 
-```text
-Phương pháp văn bản thuần:
-  Câu hỏi → Tìm kiếm ngữ nghĩa → Danh sách kết quả
-  → Chunk liên quan có thể rơi vào hạng 6–10 hoặc không nằm trong danh sách
+**Chi tiết từng mô hình:**
 
-Phương pháp nhận biết siêu dữ liệu:
-  Câu hỏi → Tìm kiếm ngữ nghĩa đối chiếu cả nội dung + cấu trúc phân cấp
-  → Chunk liên quan xuất hiện nhiều hơn ở top 3–5 kết quả đầu tiên
-```
+- **`BAAI/bge-m3`**: Đạt Recall@3, Recall@5, và MRR cao nhất trong tập đánh giá. Là mô hình duy nhất vượt mốc 40% Recall@3. Kết quả nhất quán ở cả các ngưỡng top-3, top-5 và top-10.
 
-Phương pháp nhúng nhận biết siêu dữ liệu được hiểu là một **bước cải tiến từng phần (incremental improvement)** so với baseline ban đầu, chưa phải là giải pháp hoàn chỉnh cho toàn bộ bài toán truy xuất.
+- **`mainguyen9/vietlegal-harrier-0.6b`**: Recall@10 đạt 66.7%, tương đương BGE-M3. Tuy nhiên, MRR chỉ đạt 0.275 (thấp hơn đáng kể so với 0.430 của BGE-M3), cho thấy một phần đáng kể các chunk liên quan xuất hiện ở vị trí thấp hơn trong bảng xếp hạng, điều này được phản ánh qua khoảng cách giữa Recall@10 và MRR. Đây là mô hình có khoảng cách lớn nhất giữa Recall@10 và các chỉ số Recall@3/Recall@5.
+
+- **`mainguyen9/vietlegal-e5`**: Cung cấp hiệu suất truy xuất ở mức trung gian — Recall@3 = 33.3%, MRR = 0.278. Thời gian embedding dài nhất trong năm mô hình (52.60s).
+
+- **`darklethelong/vnlegal-lal`**: Recall@10 thấp (33.3%). Điểm similarity trung bình rất cao (top-1 sim ≈ 0.928), nhưng điều này không chuyển thành kết quả truy xuất tốt hơn trong tập đánh giá này. Đây là ví dụ điển hình cho thấy thang đo similarity không thể dùng để so sánh chất lượng truy xuất giữa các mô hình.
+
+- **`jinaai/jina-embeddings-v3-hf`**: MRR thấp nhất trong năm mô hình được đánh giá trong tập đánh giá hiện tại. Các chỉ số Recall@K cũng thuộc nhóm thấp nhất trong bảng so sánh này.
+
+**Lưu ý quan trọng về similarity:**
+
+Giá trị similarity của `darklethelong/vnlegal-lal` (avg top-1 sim ≈ 0.928) cao hơn nhiều so với các mô hình khác, nhưng Recall@10 của mô hình này lại thấp nhất. Điều này xảy ra vì các thang đo similarity giữa các mô hình embedding khác nhau là hoàn toàn không tương đương. Do đó, **không nên dùng giá trị similarity thô làm tiêu chí chính để so sánh các mô hình embedding khác nhau**. Thay vào đó, hãy ưu tiên các chỉ số dựa trên ground truth như Recall@K, Hit@K và MRR.
+
+> **Lưu ý phạm vi:** Các kết luận trên được giới hạn trong phạm vi tập đánh giá hiện tại (15 câu hỏi, corpus pháp lý hiện có, cấu hình truy xuất cụ thể). Không nên khẳng định BGE-M3 là mô hình tốt nhất trên mọi tình huống hay corpus khác.
 
 ---
 
@@ -132,7 +152,28 @@ Phương pháp nhúng nhận biết siêu dữ liệu được hiểu là một 
 
 Bộ đánh giá hiện có **15 câu hỏi**. Chỉ những câu hỏi đã có ground truth xác minh mới được đưa vào tính toán các chỉ số định lượng. Những câu hỏi chưa có ground truth hoàn chỉnh được giữ lại phục vụ kiểm tra trực quan thủ công, không gán điểm số ước đoán.
 
-15 câu hỏi là đủ cho việc đối sánh phát triển kỹ thuật giữa các phương án truy xuất ở giai đoạn hiện tại. Bộ dữ liệu này chưa đủ để khẳng định tính tổng quát hóa trên diện rộng, và vẫn có một số câu hỏi chưa tìm được đúng chunk pháp lý ngay trong top-10.
+**Các hạn chế cụ thể cần lưu ý:**
+
+- **Kích thước tập đánh giá nhỏ**: 15 câu hỏi là đủ cho đối sánh kỹ thuật ở giai đoạn phát triển, nhưng chưa đủ để khẳng định tính tổng quát hóa trên diện rộng.
+- **Thời gian embedding chưa được đo chuẩn**: Các thời gian trong bảng (37.49s, 52.60s, v.v.) được ghi từ các lần chạy benchmark riêng lẻ, không phải từ nhiều lần đo lặp lại. Không nên dùng các con số này để so sánh tốc độ một cách chính xác.
+- **Kết quả đặc thù theo cấu hình**: Kết quả phụ thuộc vào corpus pháp lý hiện có, chiến lược chunking, cách biểu diễn metadata-aware, cấu hình HNSW (`m=16`, `ef_construction=64`, `ef_search=80`), và tập câu hỏi đánh giá. Thay đổi bất kỳ yếu tố nào trong số này có thể ảnh hưởng đến thứ hạng tương đối của các mô hình.
+- **Thang đo similarity không tương đương**: Như đã phân tích ở phần trên, giá trị similarity không thể so sánh trực tiếp giữa các mô hình khác nhau.
+- **Chưa có đánh giá đủ rộng**: Cần thêm câu hỏi đánh giá đa dạng hơn và nhiều lần chạy lặp lại trước khi đưa ra kết luận rộng hơn về hiệu năng mô hình.
+
+---
+
+## Hướng phát triển tiếp theo
+
+Các bước phát triển tiếp theo có thể cải thiện thêm chất lượng retrieval và độ tin cậy của đánh giá:
+
+- **Hybrid vector + trigram retrieval**: Kết hợp vector search với tìm kiếm trigram (`pg_trgm`) để tăng khả năng thu hồi. (Hệ thống cũng có thể kết hợp với PostgreSQL Full-Text Search qua `tsvector`/`tsquery` nếu cần).
+- **Reciprocal Rank Fusion (RRF)**: Hợp nhất kết quả từ nhiều nguồn truy xuất bằng RRF để cải thiện thứ hạng tổng hợp.
+- **Reranking**: Áp dụng cross-encoder reranking để tinh chỉnh thứ tự kết quả sau retrieval.
+- **Tập đánh giá lớn hơn và đa dạng hơn**: Mở rộng bộ câu hỏi đánh giá để kết quả benchmark có độ tin cậy thống kê cao hơn.
+- **Đo thời gian lặp lại**: Chạy nhiều lần đo để có baseline tốc độ embedding đáng tin cậy hơn.
+- **Tích hợp DeepX**: Hoàn thiện tích hợp `dxtech-asia/deepx-embedding-v1` để đưa vào so sánh benchmark trong các lần đánh giá tiếp theo.
+
+> Các hướng phát triển trên chưa được triển khai tại thời điểm hiện tại.
 
 ---
 
@@ -140,4 +181,7 @@ Bộ đánh giá hiện có **15 câu hỏi**. Chỉ những câu hỏi đã có
 
 - [Retrieval — Kiến trúc và sử dụng](retrieval.md)
 - [Lịch sử phát triển Retrieval](retrieval-development-history.md)
+- [Chuyển đổi mô hình embedding](embedding-model-switching.md)
+- [DeepX Embedding Backend](deepx-backend.md)
 - [Quay lại README](../README.md)
+
