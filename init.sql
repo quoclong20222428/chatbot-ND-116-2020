@@ -51,12 +51,36 @@ CREATE TABLE IF NOT EXISTS legal_chunks (
 	CHECK (jsonb_typeof(document_relations) = 'array')
 );
 
--- Add the pgvector embedding column if it does not already exist.
--- Dimension 1024 matches the dense output of BAAI/bge-m3.
--- NULL means the chunk has not been embedded yet; the indexing script
--- queries WHERE embedding IS NULL so it can resume safely after interruption.
+-- Model-specific pgvector embedding columns.
+-- Each supported embedding model writes to its own column so that vectors
+-- from different models are never mixed in the same retrieval experiment.
+-- Dimension 1024 is the project-wide standard for all models.
+-- NULL means the chunk has not been embedded with that model yet; the
+-- indexing script queries WHERE <column> IS NULL so it can resume safely.
+
+-- 1. BAAI/bge-m3 (default, backwards-compatible column name)
 ALTER TABLE legal_chunks
 	ADD COLUMN IF NOT EXISTS embedding vector(1024);
+
+-- 2. darklethelong/vnlegal-lal
+ALTER TABLE legal_chunks
+	ADD COLUMN IF NOT EXISTS embedding_vnlegal_lal vector(1024);
+
+-- 3. mainguyen9/vietlegal-harrier-0.6b
+ALTER TABLE legal_chunks
+	ADD COLUMN IF NOT EXISTS embedding_vietlegal_harrier vector(1024);
+
+-- 4. mainguyen9/vietlegal-e5
+ALTER TABLE legal_chunks
+	ADD COLUMN IF NOT EXISTS embedding_vietlegal_e5 vector(1024);
+
+-- 5. jinaai/jina-embeddings-v3
+ALTER TABLE legal_chunks
+	ADD COLUMN IF NOT EXISTS embedding_jina_v3 vector(1024);
+
+-- 6. dxtech-asia/deepx-embedding-v1
+ALTER TABLE legal_chunks
+	ADD COLUMN IF NOT EXISTS embedding_deepx vector(1024);
 
 CREATE TABLE IF NOT EXISTS legal_chunk_references (
 	reference_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -229,14 +253,42 @@ CROSS JOIN LATERAL jsonb_array_elements(chunk."references") AS reference
 WHERE NULLIF(reference->>'raw_reference', '') IS NOT NULL
 ON CONFLICT DO NOTHING;
 
--- Create the HNSW vector index for cosine similarity search.
--- Placed after data import so the index is built once over populated data
+-- Create HNSW vector indexes for cosine similarity search.
+-- Placed after data import so the indexes are built once over populated data
 -- rather than maintained incrementally during bulk inserts.
 -- m=16 and ef_construction=64 are the pgvector defaults; suitable for a
 -- dataset of this size and provide a good accuracy / build-time trade-off.
--- The index is created CONCURRENTLY via IF NOT EXISTS; safe to re-run.
+-- All indexes use the same parameters so that the embedding model is the
+-- only experimental variable when comparing retrieval performance.
+
+-- 1. BAAI/bge-m3 (default)
 CREATE INDEX IF NOT EXISTS legal_chunks_embedding_hnsw_idx
 	ON legal_chunks USING hnsw (embedding vector_cosine_ops)
+	WITH (m = 16, ef_construction = 64);
+
+-- 2. darklethelong/vnlegal-lal
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_vnlegal_lal_hnsw_idx
+	ON legal_chunks USING hnsw (embedding_vnlegal_lal vector_cosine_ops)
+	WITH (m = 16, ef_construction = 64);
+
+-- 3. mainguyen9/vietlegal-harrier-0.6b
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_vietlegal_harrier_hnsw_idx
+	ON legal_chunks USING hnsw (embedding_vietlegal_harrier vector_cosine_ops)
+	WITH (m = 16, ef_construction = 64);
+
+-- 4. mainguyen9/vietlegal-e5
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_vietlegal_e5_hnsw_idx
+	ON legal_chunks USING hnsw (embedding_vietlegal_e5 vector_cosine_ops)
+	WITH (m = 16, ef_construction = 64);
+
+-- 5. jinaai/jina-embeddings-v3
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_jina_v3_hnsw_idx
+	ON legal_chunks USING hnsw (embedding_jina_v3 vector_cosine_ops)
+	WITH (m = 16, ef_construction = 64);
+
+-- 6. dxtech-asia/deepx-embedding-v1
+CREATE INDEX IF NOT EXISTS legal_chunks_embedding_deepx_hnsw_idx
+	ON legal_chunks USING hnsw (embedding_deepx vector_cosine_ops)
 	WITH (m = 16, ef_construction = 64);
 
 COMMIT;

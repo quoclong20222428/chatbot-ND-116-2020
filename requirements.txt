@@ -32,5 +32,10 @@ pgvector>=0.3.0
 # Embedding model: Official BAAI library for BAAI/bge-m3 dense vector generation
 FlagEmbedding>=1.2.9
 
+# Embedding models: Sentence Transformers for vnlegal-lal, vietlegal-harrier,
+# vietlegal-e5, jina-embeddings-v3, and deepx-embedding-v1
+sentence-transformers>=3.0.0
+
 # Testing: Unit test suite (tests/test_embedding.py)
 pytest>=8.0.0
+

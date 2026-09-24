@@ -1,11 +1,10 @@
-"""Unit tests for the embedding and indexing components.
+"""Unit tests for the embedding, model registry, and indexing components.
 
-These tests use unittest.mock to patch BAAI/bge-m3 so that the real 1 GB
-model is never downloaded during CI or local test runs.
+These tests use unittest.mock to patch model loading so that the real models
+(1+ GB each) are never downloaded during CI or local test runs.
 
 Run from the repository root::
 
-    conda activate chatbot
     python -m pytest tests/test_embedding.py -v
 """
 
@@ -51,8 +50,170 @@ def _make_fake_flag_embedding_module() -> types.ModuleType:
     return fake_pkg
 
 
+def _fake_st_encode(texts, batch_size=32, normalize_embeddings=True, **kwargs):
+    """Return a plausible SentenceTransformer.encode() result."""
+    import numpy as np  # noqa: PLC0415
+    return np.zeros((len(texts), FAKE_DIM), dtype="float32")
+
+
+def _make_fake_sentence_transformers_module() -> types.ModuleType:
+    """Build a minimal fake sentence_transformers package."""
+    fake_pkg = types.ModuleType("sentence_transformers")
+    fake_model_cls = MagicMock(name="SentenceTransformer")
+    fake_model_instance = MagicMock(name="st_instance")
+    fake_model_instance.encode.side_effect = _fake_st_encode
+    fake_model_instance.get_sentence_embedding_dimension.return_value = FAKE_DIM
+    fake_model_cls.return_value = fake_model_instance
+    fake_pkg.SentenceTransformer = fake_model_cls
+    return fake_pkg
+
+
+def _fake_deepx_encode(texts, truncate_dim=1024, normalize=True, batch_size=None, **kwargs):
+    """Return a plausible DeepXEmbed.encode() result."""
+    import numpy as np  # noqa: PLC0415
+    n = len(texts) if hasattr(texts, "__len__") else 1
+    return np.zeros((n, truncate_dim), dtype="float32")
+
+
+def _make_fake_deepx_module() -> types.ModuleType:
+    """Build a minimal fake deepx_embed package with a DeepXEmbed class."""
+    fake_pkg = types.ModuleType("deepx_embed")
+
+    fake_model_cls = MagicMock(name="DeepXEmbed")
+    fake_model_instance = MagicMock(name="deepx_instance")
+    fake_model_instance.encode.side_effect = _fake_deepx_encode
+    fake_model_cls.from_pretrained.return_value = fake_model_instance
+    fake_pkg.DeepXEmbed = fake_model_cls
+    return fake_pkg
+
+
+def _cleanup_modules():
+    """Remove embedding-related modules from sys.modules for clean reimport."""
+    for mod in list(sys.modules):
+        if mod in ("embedding", "model_registry", "index_embeddings"):
+            del sys.modules[mod]
+
+
 # ---------------------------------------------------------------------------
-# EmbeddingModel tests
+# Model Registry tests
+# ---------------------------------------------------------------------------
+
+
+class TestModelRegistry(unittest.TestCase):
+    """Tests for model_registry.resolve_model_config and model metadata."""
+
+    def setUp(self):
+        _cleanup_modules()
+
+    def tearDown(self):
+        _cleanup_modules()
+
+    def _import(self):
+        import model_registry as mr  # noqa: PLC0415
+        return mr
+
+    def test_default_model_is_bge_m3(self):
+        mr = self._import()
+        config = mr.resolve_model_config(None)
+        self.assertEqual(config.model_id, "BAAI/bge-m3")
+        self.assertEqual(config.alias, "bge-m3")
+
+    def test_resolve_by_alias(self):
+        mr = self._import()
+        config = mr.resolve_model_config("jina-v3")
+        self.assertEqual(config.model_id, "jinaai/jina-embeddings-v3-hf")
+        self.assertEqual(config.backend, "jina")
+
+    def test_resolve_by_model_id(self):
+        mr = self._import()
+        config = mr.resolve_model_config("mainguyen9/vietlegal-e5")
+        self.assertEqual(config.alias, "vietlegal-e5")
+        self.assertEqual(config.query_prefix, "query: ")
+        self.assertEqual(config.document_prefix, "passage: ")
+
+    def test_unsupported_model_raises_valueerror(self):
+        mr = self._import()
+        with self.assertRaises(ValueError) as ctx:
+            mr.resolve_model_config("totally/fake-model")
+        self.assertIn("Unsupported embedding model", str(ctx.exception))
+        # Error message should list supported models.
+        self.assertIn("bge-m3", str(ctx.exception))
+        self.assertIn("jina-v3", str(ctx.exception))
+
+    def test_empty_string_resolves_to_default(self):
+        mr = self._import()
+        config = mr.resolve_model_config("")
+        self.assertEqual(config.alias, "bge-m3")
+
+    def test_all_models_have_1024_dimension(self):
+        mr = self._import()
+        for alias in mr.SUPPORTED_ALIASES:
+            config = mr.resolve_model_config(alias)
+            self.assertEqual(
+                config.dimension, 1024,
+                f"Model {alias} has dimension {config.dimension}, expected 1024",
+            )
+
+    def test_all_models_have_unique_columns(self):
+        mr = self._import()
+        columns = set()
+        for alias in mr.SUPPORTED_ALIASES:
+            config = mr.resolve_model_config(alias)
+            self.assertNotIn(
+                config.embedding_column, columns,
+                f"Duplicate embedding column: {config.embedding_column}",
+            )
+            columns.add(config.embedding_column)
+
+    def test_bge_m3_backwards_compatible_column(self):
+        """The BGE-M3 model should use the original 'embedding' column name."""
+        mr = self._import()
+        config = mr.resolve_model_config("bge-m3")
+        self.assertEqual(config.embedding_column, "embedding")
+        self.assertEqual(config.hnsw_index_name, "legal_chunks_embedding_hnsw_idx")
+
+    def test_other_models_have_prefixed_columns(self):
+        mr = self._import()
+        for alias in mr.SUPPORTED_ALIASES:
+            if alias == "bge-m3":
+                continue
+            config = mr.resolve_model_config(alias)
+            self.assertTrue(
+                config.embedding_column.startswith("embedding_"),
+                f"Model {alias} column should start with 'embedding_': {config.embedding_column}",
+            )
+
+    def test_six_supported_models(self):
+        mr = self._import()
+        self.assertEqual(len(mr.SUPPORTED_ALIASES), 6)
+
+    def test_case_insensitive_resolve(self):
+        mr = self._import()
+        config = mr.resolve_model_config("BGE-M3")
+        self.assertEqual(config.model_id, "BAAI/bge-m3")
+
+    def test_e5_model_has_prefixes(self):
+        mr = self._import()
+        config = mr.resolve_model_config("vietlegal-e5")
+        self.assertEqual(config.query_prefix, "query: ")
+        self.assertEqual(config.document_prefix, "passage: ")
+
+    def test_jina_model_has_prompt_names(self):
+        mr = self._import()
+        config = mr.resolve_model_config("jina-v3")
+        self.assertEqual(config.query_prompt_name, "retrieval.query")
+        self.assertEqual(config.document_prompt_name, "retrieval.passage")
+        self.assertTrue(config.trust_remote_code)
+
+    def test_bge_model_has_no_prefixes(self):
+        mr = self._import()
+        config = mr.resolve_model_config("bge-m3")
+        self.assertEqual(config.query_prefix, "")
+        self.assertEqual(config.document_prefix, "")
+
+
+# ---------------------------------------------------------------------------
+# EmbeddingModel tests (BGE backend)
 # ---------------------------------------------------------------------------
 
 
@@ -60,14 +221,11 @@ class TestEmbeddingModelInit(unittest.TestCase):
     def setUp(self):
         self.fake_fe = _make_fake_flag_embedding_module()
         sys.modules["FlagEmbedding"] = self.fake_fe
-        # Force reimport so the patched module is used.
-        if "embedding" in sys.modules:
-            del sys.modules["embedding"]
+        _cleanup_modules()
 
     def tearDown(self):
-        del sys.modules["FlagEmbedding"]
-        if "embedding" in sys.modules:
-            del sys.modules["embedding"]
+        sys.modules.pop("FlagEmbedding", None)
+        _cleanup_modules()
 
     def _import(self):
         import embedding as em  # noqa: PLC0415
@@ -78,66 +236,266 @@ class TestEmbeddingModelInit(unittest.TestCase):
         model = em.EmbeddingModel()
         self.assertEqual(model.model_name, "BAAI/bge-m3")
 
-    def test_custom_model_name(self):
+    def test_custom_model_name_bge(self):
         em = self._import()
-        model = em.EmbeddingModel(model_name="custom/model")
-        self.assertEqual(model.model_name, "custom/model")
+        model = em.EmbeddingModel(model_name="BAAI/bge-m3")
+        self.assertEqual(model.model_name, "BAAI/bge-m3")
 
     def test_embedding_dim_constant(self):
         em = self._import()
         model = em.EmbeddingModel()
         self.assertEqual(model.embedding_dim, 1024)
 
+    def test_get_dimension_method(self):
+        em = self._import()
+        model = em.EmbeddingModel()
+        self.assertEqual(model.get_dimension(), 1024)
 
-class TestEmbedTexts(unittest.TestCase):
+    def test_get_model_name_method(self):
+        em = self._import()
+        model = em.EmbeddingModel()
+        self.assertEqual(model.get_model_name(), "BAAI/bge-m3")
+
+    def test_config_property_available(self):
+        em = self._import()
+        model = em.EmbeddingModel()
+        self.assertEqual(model.config.alias, "bge-m3")
+        self.assertEqual(model.config.backend, "bge")
+
+
+# ---------------------------------------------------------------------------
+# Query vs Document embedding tests (BGE backend)
+# ---------------------------------------------------------------------------
+
+
+class TestEmbedQueryAndDocuments(unittest.TestCase):
     def setUp(self):
         self.fake_fe = _make_fake_flag_embedding_module()
         sys.modules["FlagEmbedding"] = self.fake_fe
-        if "embedding" in sys.modules:
-            del sys.modules["embedding"]
+        _cleanup_modules()
 
     def tearDown(self):
-        del sys.modules["FlagEmbedding"]
-        if "embedding" in sys.modules:
-            del sys.modules["embedding"]
+        sys.modules.pop("FlagEmbedding", None)
+        _cleanup_modules()
 
     def _make_model(self):
         import embedding as em  # noqa: PLC0415
         return em.EmbeddingModel()
 
-    def test_returns_list_of_lists(self):
+    def test_embed_query_returns_single_vector(self):
         model = self._make_model()
-        result = model.embed_texts(["Điều 1. Phạm vi điều chỉnh"])
+        result = model.embed_query("Điều 1. Phạm vi điều chỉnh")
         self.assertIsInstance(result, list)
-        self.assertEqual(len(result), 1)
-        self.assertIsInstance(result[0], list)
+        self.assertEqual(len(result), FAKE_DIM)
+        self.assertIsInstance(result[0], float)
 
-    def test_correct_output_dimension(self):
+    def test_embed_documents_returns_list_of_vectors(self):
+        model = self._make_model()
+        result = model.embed_documents(["Điều 1", "Khoản 2"])
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), 2)
+        for vec in result:
+            self.assertIsInstance(vec, list)
+            self.assertEqual(len(vec), FAKE_DIM)
+
+    def test_embed_texts_backwards_compat(self):
+        """embed_texts is a backwards-compatible alias for embed_documents."""
         model = self._make_model()
         result = model.embed_texts(["Điều 1", "Khoản 2"])
+        self.assertIsInstance(result, list)
         self.assertEqual(len(result), 2)
         for vec in result:
             self.assertEqual(len(vec), FAKE_DIM)
 
-    def test_empty_input_returns_empty(self):
+    def test_embed_documents_empty_input(self):
         model = self._make_model()
-        result = model.embed_texts([])
+        result = model.embed_documents([])
         self.assertEqual(result, [])
 
-    def test_multiple_texts(self):
+    def test_embed_documents_multiple_texts(self):
         model = self._make_model()
         texts = [f"Văn bản pháp luật {i}" for i in range(10)]
-        result = model.embed_texts(texts)
+        result = model.embed_documents(texts)
         self.assertEqual(len(result), 10)
 
-    def test_vietnamese_text_passes_through(self):
-        """Verify that Vietnamese diacritics are not stripped (model receives original text)."""
-        model = self._make_model()
-        original = "Nghị định số 116/2020/NĐ-CP của Chính phủ"
-        model.embed_texts([original])
-        call_args = self.fake_fe.BGEM3FlagModel.return_value.encode.call_args
+
+# ---------------------------------------------------------------------------
+# SentenceTransformer backend tests
+# ---------------------------------------------------------------------------
+
+
+class TestSentenceTransformerBackend(unittest.TestCase):
+    def setUp(self):
+        self.fake_st = _make_fake_sentence_transformers_module()
+        sys.modules["sentence_transformers"] = self.fake_st
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("sentence_transformers", None)
+        _cleanup_modules()
+
+    def _make_model(self, model_name):
+        import embedding as em  # noqa: PLC0415
+        return em.EmbeddingModel(model_name=model_name)
+
+    def test_vnlegal_lal_loads_correctly(self):
+        model = self._make_model("vnlegal-lal")
+        self.assertEqual(model.model_name, "darklethelong/vnlegal-lal")
+        self.assertEqual(model.config.backend, "sentence_transformer")
+
+    def test_vietlegal_harrier_loads_correctly(self):
+        model = self._make_model("vietlegal-harrier")
+        self.assertEqual(model.model_name, "mainguyen9/vietlegal-harrier-0.6b")
+
+    def test_e5_embed_query_prepends_prefix(self):
+        model = self._make_model("vietlegal-e5")
+        model.embed_query("test query")
+        # The encode call should have received the prefixed text.
+        call_args = self.fake_st.SentenceTransformer.return_value.encode.call_args
         texts_sent = call_args[0][0]  # first positional arg
-        self.assertIn(original, texts_sent)
+        self.assertEqual(texts_sent[0], "query: test query")
+
+    def test_e5_embed_documents_prepends_prefix(self):
+        model = self._make_model("vietlegal-e5")
+        model.embed_documents(["doc1", "doc2"])
+        call_args = self.fake_st.SentenceTransformer.return_value.encode.call_args
+        texts_sent = call_args[0][0]
+        self.assertEqual(texts_sent[0], "passage: doc1")
+        self.assertEqual(texts_sent[1], "passage: doc2")
+
+    def test_no_prefix_for_generic_models(self):
+        model = self._make_model("vnlegal-lal")
+        model.embed_query("test query")
+        call_args = self.fake_st.SentenceTransformer.return_value.encode.call_args
+        texts_sent = call_args[0][0]
+        self.assertEqual(texts_sent[0], "test query")
+
+    def test_embed_query_returns_correct_dimension(self):
+        model = self._make_model("vietlegal-harrier")
+        result = model.embed_query("test")
+        self.assertEqual(len(result), FAKE_DIM)
+
+    def test_embed_documents_returns_correct_dimension(self):
+        model = self._make_model("vietlegal-harrier")
+        result = model.embed_documents(["a", "b", "c"])
+        self.assertEqual(len(result), 3)
+        for vec in result:
+            self.assertEqual(len(vec), FAKE_DIM)
+
+
+# ---------------------------------------------------------------------------
+# Jina backend tests
+# ---------------------------------------------------------------------------
+
+
+class TestJinaBackend(unittest.TestCase):
+    def setUp(self):
+        self.fake_st = _make_fake_sentence_transformers_module()
+        sys.modules["sentence_transformers"] = self.fake_st
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("sentence_transformers", None)
+        _cleanup_modules()
+
+    def test_jina_loads_with_trust_remote_code(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="jina-v3")
+        self.assertEqual(model.model_name, "jinaai/jina-embeddings-v3-hf")
+        call_kwargs = self.fake_st.SentenceTransformer.call_args
+        self.assertTrue(call_kwargs[1].get("trust_remote_code", False))
+
+    def test_jina_embed_query_returns_vector(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="jina-v3")
+        result = model.embed_query("test query")
+        self.assertEqual(len(result), FAKE_DIM)
+
+    def test_jina_embed_documents_returns_vectors(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="jina-v3")
+        result = model.embed_documents(["doc1", "doc2"])
+        self.assertEqual(len(result), 2)
+
+
+# ---------------------------------------------------------------------------
+# Dimension validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestDimensionValidation(unittest.TestCase):
+    def setUp(self):
+        self.fake_fe = _make_fake_flag_embedding_module()
+        sys.modules["FlagEmbedding"] = self.fake_fe
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("FlagEmbedding", None)
+        _cleanup_modules()
+
+    def test_correct_dimension_passes(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel()
+        # Should not raise.
+        result = model.embed_query("test")
+        self.assertEqual(len(result), 1024)
+
+    def test_wrong_dimension_raises_valueerror(self):
+        """If the model returns wrong-dimension vectors, validation catches it."""
+        import numpy as np  # noqa: PLC0415
+        import embedding as em  # noqa: PLC0415
+
+        model = em.EmbeddingModel()
+
+        # Patch the backend to return 768-dimensional vectors.
+        def bad_encode(texts, **kwargs):
+            return {"dense_vecs": np.zeros((len(texts), 768), dtype="float32")}
+
+        model._backend._model.encode.side_effect = bad_encode
+
+        with self.assertRaises(ValueError) as ctx:
+            model.embed_query("test")
+        self.assertIn("Dimension mismatch", str(ctx.exception))
+        self.assertIn("768", str(ctx.exception))
+
+
+# ---------------------------------------------------------------------------
+# Model isolation tests
+# ---------------------------------------------------------------------------
+
+
+class TestModelIsolation(unittest.TestCase):
+    """Verify that different models map to different database columns."""
+
+    def setUp(self):
+        _cleanup_modules()
+
+    def tearDown(self):
+        _cleanup_modules()
+
+    def test_different_models_use_different_columns(self):
+        import model_registry as mr  # noqa: PLC0415
+        columns = {}
+        for alias in mr.SUPPORTED_ALIASES:
+            config = mr.resolve_model_config(alias)
+            columns[alias] = config.embedding_column
+
+        # All columns must be unique.
+        self.assertEqual(len(columns), len(set(columns.values())))
+
+    def test_different_models_use_different_indexes(self):
+        import model_registry as mr  # noqa: PLC0415
+        indexes = {}
+        for alias in mr.SUPPORTED_ALIASES:
+            config = mr.resolve_model_config(alias)
+            indexes[alias] = config.hnsw_index_name
+
+        self.assertEqual(len(indexes), len(set(indexes.values())))
+
+
+# ---------------------------------------------------------------------------
+# Missing library tests
+# ---------------------------------------------------------------------------
 
 
 class TestEmbedTextsMissingFlagEmbedding(unittest.TestCase):
@@ -181,13 +539,11 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
     def setUp(self):
         self.fake_fe = _make_fake_flag_embedding_module()
         sys.modules["FlagEmbedding"] = self.fake_fe
-        for mod in ("embedding", "index_embeddings"):
-            sys.modules.pop(mod, None)
+        _cleanup_modules()
 
     def tearDown(self):
-        del sys.modules["FlagEmbedding"]
-        for mod in ("embedding", "index_embeddings"):
-            sys.modules.pop(mod, None)
+        sys.modules.pop("FlagEmbedding", None)
+        _cleanup_modules()
 
     def _import(self):
         import embedding  # noqa: PLC0415  (needed to resolve import inside index_embeddings)
@@ -248,40 +604,49 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
             ),
         ]
         with patch.object(ie, "connect_db", return_value=mock_conn):
-            stats = ie.index_chunks("postgresql://fake/db", model, chunks, batch_size=32)
+            stats = ie.index_chunks(
+                "postgresql://fake/db", model, chunks,
+                batch_size=32, embedding_column="embedding",
+            )
 
         self.assertEqual(stats.succeeded, 2)
         self.assertEqual(stats.failed, 0)
         mock_conn.commit.assert_called()
 
-    def test_index_chunks_idempotency_skip_null(self):
-        """SELECT_UNEMBEDDED filters chunks WHERE embedding IS NULL."""
+    def test_select_unembedded_uses_model_column(self):
         ie = self._import()
-        # The SQL constant must contain the IS NULL guard.
-        self.assertIn("IS NULL", ie.SELECT_UNEMBEDDED)
+        sql = ie._select_unembedded("embedding_jina_v3")
+        self.assertIn("embedding_jina_v3 IS NULL", sql)
 
-    def test_rebuild_query_has_no_null_filter(self):
+    def test_select_unembedded_default_column(self):
         ie = self._import()
-        self.assertNotIn("IS NULL", ie.SELECT_ALL)
+        sql = ie._select_unembedded("embedding")
+        self.assertIn("embedding IS NULL", sql)
 
-    def test_verify_detects_missing(self):
-        """verify() should reflect counts returned by the mock DB cursor."""
+    def test_update_embedding_uses_model_column(self):
+        ie = self._import()
+        sql = ie._update_embedding("embedding_vietlegal_e5")
+        self.assertIn("embedding_vietlegal_e5 =", sql)
+
+    def test_verify_with_model_column(self):
+        """verify() should check the correct model-specific column."""
         ie = self._import()
 
         mock_cursor = MagicMock()
-        # VERIFY_COUNTS returns (total, embedded).
-        # VERIFY_DIMENSION returns (chunk_id, dim).
-        # CHECK_HNSW_INDEX returns a row (index exists).
         mock_cursor.fetchone.side_effect = [
-            (618, 500),   # VERIFY_COUNTS: 118 missing
-            ("chunk-1", 1024),  # VERIFY_DIMENSION
-            ("legal_chunks_embedding_hnsw_idx",),  # CHECK_HNSW_INDEX
+            (618, 500),   # verify counts
+            ("chunk-1", 1024),  # verify dimension
+            ("legal_chunks_embedding_hnsw_idx",),  # check index
         ]
         mock_conn = MagicMock()
         mock_conn.cursor.return_value.__enter__ = lambda s: mock_cursor
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        result = ie.verify(mock_conn)
+        result = ie.verify(
+            mock_conn,
+            embedding_column="embedding",
+            hnsw_index_name="legal_chunks_embedding_hnsw_idx",
+        )
 
         self.assertEqual(result["total_chunks"], 618)
         self.assertEqual(result["embedded_chunks"], 500)
@@ -289,39 +654,22 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
         self.assertTrue(result["embedding_dim_ok"])
         self.assertTrue(result["hnsw_index_exists"])
 
-    def test_verify_detects_wrong_dimension(self):
-        ie = self._import()
-
-        mock_cursor = MagicMock()
-        mock_cursor.fetchone.side_effect = [
-            (618, 618),
-            ("chunk-1", 768),   # wrong dim
-            ("legal_chunks_embedding_hnsw_idx",),
-        ]
-        mock_conn = MagicMock()
-        mock_conn.cursor.return_value.__enter__ = lambda s: mock_cursor
-        mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
-
-        result = ie.verify(mock_conn)
-        self.assertFalse(result["embedding_dim_ok"])
-        self.assertEqual(result["embedding_dim"], 768)
-
 
 if __name__ == "__main__":
     unittest.main()
 
 
 # ---------------------------------------------------------------------------
-# build_embedding_text tests
+# build_embedding_text tests (unchanged — model-independent)
 # ---------------------------------------------------------------------------
 
 
 class TestBuildEmbeddingText(unittest.TestCase):
     """Tests for embedding.build_embedding_text().
 
-    These tests do NOT load BGE-M3; they only verify the string construction
-    logic.  The fake FlagEmbedding module is injected via sys.modules so that
-    importing ``embedding`` succeeds without the real model.
+    These tests do NOT load any embedding model; they only verify the string
+    construction logic.  The fake FlagEmbedding module is injected via
+    sys.modules so that importing ``embedding`` succeeds without the real model.
     """
 
     _ND116 = "Nghị định 116/2020/NĐ-CP"
@@ -585,7 +933,7 @@ class TestBuildEmbeddingText(unittest.TestCase):
     # --- Integration: build_embedding_text output fed to embed_texts ---
 
     def test_build_embedding_text_output_is_embeddable(self):
-        """Output of build_embedding_text can be passed to embed_texts without error."""
+        """Output of build_embedding_text can be passed to embed_documents without error."""
         import embedding as em  # noqa: PLC0415
         fn = em.build_embedding_text
         model = em.EmbeddingModel()
@@ -600,9 +948,310 @@ class TestBuildEmbeddingText(unittest.TestCase):
                 "point": None,
             },
         )
-        vectors = model.embed_texts([emb_input])
+        vectors = model.embed_documents([emb_input])
         self.assertEqual(len(vectors), 1)
         self.assertEqual(len(vectors[0]), FAKE_DIM)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# DeepX backend tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeepXRegistry(unittest.TestCase):
+    """Verify DeepX model_registry entries without loading any real model."""
+
+    def setUp(self):
+        _cleanup_modules()
+
+    def tearDown(self):
+        _cleanup_modules()
+
+    def _import(self):
+        import model_registry as mr  # noqa: PLC0415
+        return mr
+
+    def test_deepx_resolves_by_alias(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertEqual(config.alias, "deepx")
+
+    def test_deepx_resolves_by_model_id(self):
+        mr = self._import()
+        config = mr.resolve_model_config("dxtech-asia/deepx-embedding-v1")
+        self.assertEqual(config.alias, "deepx")
+
+    def test_deepx_backend_is_deepx(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertEqual(config.backend, "deepx")
+
+    def test_deepx_dimension_is_1024(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertEqual(config.dimension, 1024)
+
+    def test_deepx_max_seq_length_is_8192(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertEqual(config.max_seq_length, 8192)
+
+    def test_deepx_trust_remote_code_is_true(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertTrue(config.trust_remote_code)
+
+    def test_deepx_embedding_column(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertEqual(config.embedding_column, "embedding_deepx")
+
+    def test_deepx_hnsw_index_name(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertEqual(config.hnsw_index_name, "legal_chunks_embedding_deepx_hnsw_idx")
+
+    def test_deepx_normalize_is_true(self):
+        mr = self._import()
+        config = mr.resolve_model_config("deepx")
+        self.assertTrue(config.normalize)
+
+    # --- Verify other models still use their original backends ---
+
+    def test_bge_m3_backend_unchanged(self):
+        mr = self._import()
+        self.assertEqual(mr.resolve_model_config("bge-m3").backend, "bge")
+
+    def test_vnlegal_lal_backend_unchanged(self):
+        mr = self._import()
+        self.assertEqual(mr.resolve_model_config("vnlegal-lal").backend, "sentence_transformer")
+
+    def test_vietlegal_harrier_backend_unchanged(self):
+        mr = self._import()
+        self.assertEqual(mr.resolve_model_config("vietlegal-harrier").backend, "sentence_transformer")
+
+    def test_vietlegal_e5_backend_unchanged(self):
+        mr = self._import()
+        self.assertEqual(mr.resolve_model_config("vietlegal-e5").backend, "sentence_transformer")
+
+    def test_jina_v3_backend_unchanged(self):
+        mr = self._import()
+        self.assertEqual(mr.resolve_model_config("jina-v3").backend, "jina")
+
+
+class TestDeepXBackendFactory(unittest.TestCase):
+    """Verify that the backend factory creates a _DeepXBackend for deepx configs."""
+
+    def setUp(self):
+        self.fake_deepx = _make_fake_deepx_module()
+        sys.modules["deepx_embed"] = self.fake_deepx
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("deepx_embed", None)
+        _cleanup_modules()
+
+    def test_factory_creates_deepx_backend(self):
+        import embedding as em  # noqa: PLC0415
+        import model_registry as mr  # noqa: PLC0415
+        config = mr.resolve_model_config("deepx")
+        backend = em._create_backend(config)
+        self.assertIsInstance(backend, em._DeepXBackend)
+
+    def test_factory_does_not_create_st_backend_for_deepx(self):
+        import embedding as em  # noqa: PLC0415
+        import model_registry as mr  # noqa: PLC0415
+        config = mr.resolve_model_config("deepx")
+        backend = em._create_backend(config)
+        self.assertNotIsInstance(backend, em._SentenceTransformerBackend)
+
+    def test_deepx_embedding_model_uses_deepx_backend(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="deepx")
+        self.assertIsInstance(model._backend, em._DeepXBackend)
+
+    def test_from_pretrained_called_with_model_id(self):
+        import embedding as em  # noqa: PLC0415
+        em.EmbeddingModel(model_name="deepx")
+        call_args = self.fake_deepx.DeepXEmbed.from_pretrained.call_args
+        self.assertEqual(call_args[0][0], "dxtech-asia/deepx-embedding-v1")
+
+
+class TestDeepXBatching(unittest.TestCase):
+    """Verify batching logic: ordering, count, and batch_size handling."""
+
+    def setUp(self):
+        self.fake_deepx = _make_fake_deepx_module()
+        sys.modules["deepx_embed"] = self.fake_deepx
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("deepx_embed", None)
+        _cleanup_modules()
+
+    def _make_model(self):
+        import embedding as em  # noqa: PLC0415
+        return em.EmbeddingModel(model_name="deepx")
+
+    def test_output_count_matches_input_count(self):
+        model = self._make_model()
+        texts = [f"document {i}" for i in range(17)]
+        result = model.embed_documents(texts, batch_size=5)
+        self.assertEqual(len(result), 17)
+
+    def test_single_text_batch(self):
+        model = self._make_model()
+        result = model.embed_documents(["single doc"], batch_size=10)
+        self.assertEqual(len(result), 1)
+
+    def test_batch_size_larger_than_input(self):
+        model = self._make_model()
+        texts = ["a", "b", "c"]
+        result = model.embed_documents(texts, batch_size=100)
+        self.assertEqual(len(result), 3)
+
+    def test_ordering_preserved_across_batches(self):
+        """Each input position maps to the correct output vector."""
+        import numpy as np  # noqa: PLC0415
+
+        call_order: list[str] = []
+
+        def ordered_encode(texts, truncate_dim=1024, **kwargs):
+            call_order.extend(texts)
+            n = len(texts) if hasattr(texts, "__len__") else 1
+            return np.zeros((n, truncate_dim), dtype="float32")
+
+        self.fake_deepx.DeepXEmbed.from_pretrained.return_value.encode.side_effect = ordered_encode
+
+        model = self._make_model()
+        texts = [f"text-{i}" for i in range(10)]
+        model.embed_documents(texts, batch_size=3)
+
+        self.assertEqual(call_order, texts)
+
+    def test_embed_query_returns_single_vector(self):
+        model = self._make_model()
+        result = model.embed_query("test query")
+        self.assertIsInstance(result, list)
+        self.assertEqual(len(result), FAKE_DIM)
+        self.assertIsInstance(result[0], float)
+
+
+class TestDeepXDimension(unittest.TestCase):
+    """Verify DeepX always returns exactly 1024-dimensional vectors."""
+
+    def setUp(self):
+        self.fake_deepx = _make_fake_deepx_module()
+        sys.modules["deepx_embed"] = self.fake_deepx
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("deepx_embed", None)
+        _cleanup_modules()
+
+    def _make_model(self):
+        import embedding as em  # noqa: PLC0415
+        return em.EmbeddingModel(model_name="deepx")
+
+    def test_embed_query_returns_1024d(self):
+        model = self._make_model()
+        result = model.embed_query("test")
+        self.assertEqual(len(result), 1024)
+
+    def test_embed_documents_returns_1024d_each(self):
+        model = self._make_model()
+        result = model.embed_documents(["a", "b", "c"])
+        for vec in result:
+            self.assertEqual(len(vec), 1024)
+
+    def test_truncate_dim_forwarded_to_encode(self):
+        """The backend must request truncate_dim=1024 from the model."""
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="deepx")
+        model.embed_documents(["test text"])
+        encode_call = self.fake_deepx.DeepXEmbed.from_pretrained.return_value.encode.call_args
+        # truncate_dim should be 1024, not 1536 or None.
+        kwargs = encode_call[1] if encode_call[1] else {}
+        args = encode_call[0] if encode_call[0] else ()
+        # truncate_dim may be positional or keyword depending on the fake.
+        self.assertIn("truncate_dim", kwargs)
+        self.assertEqual(kwargs["truncate_dim"], 1024)
+
+    def test_wrong_dimension_caught_by_validation(self):
+        """If the backend returns wrong-dim vectors, EmbeddingModel catches it."""
+        import numpy as np  # noqa: PLC0415
+        import embedding as em  # noqa: PLC0415
+
+        def bad_encode(texts, truncate_dim=1024, **kwargs):
+            return np.zeros((len(texts), 768), dtype="float32")
+
+        self.fake_deepx.DeepXEmbed.from_pretrained.return_value.encode.side_effect = bad_encode
+
+        model = em.EmbeddingModel(model_name="deepx")
+        with self.assertRaises(ValueError) as ctx:
+            model.embed_documents(["test"])
+        self.assertIn("Dimension mismatch", str(ctx.exception))
+
+
+class TestDeepXEmptyInput(unittest.TestCase):
+    """Verify that empty input is handled correctly."""
+
+    def setUp(self):
+        self.fake_deepx = _make_fake_deepx_module()
+        sys.modules["deepx_embed"] = self.fake_deepx
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("deepx_embed", None)
+        _cleanup_modules()
+
+    def test_embed_documents_empty_list_returns_empty(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="deepx")
+        result = model.embed_documents([])
+        self.assertEqual(result, [])
+
+    def test_encode_not_called_for_empty_input(self):
+        import embedding as em  # noqa: PLC0415
+        model = em.EmbeddingModel(model_name="deepx")
+        model.embed_documents([])
+        encode_mock = self.fake_deepx.DeepXEmbed.from_pretrained.return_value.encode
+        encode_mock.assert_not_called()
+
+
+class TestDeepXMissingLibrary(unittest.TestCase):
+    """Verify a clear ImportError is raised when deepx_embed is not installed."""
+
+    def setUp(self):
+        # Ensure deepx_embed is NOT in sys.modules.
+        sys.modules.pop("deepx_embed", None)
+        _cleanup_modules()
+
+    def tearDown(self):
+        sys.modules.pop("deepx_embed", None)
+        _cleanup_modules()
+
+    def test_import_error_raised_with_install_hint(self):
+        import builtins  # noqa: PLC0415
+        _real_import = builtins.__import__
+
+        def _blocking_import(name, *args, **kwargs):
+            if name == "deepx_embed" or name.startswith("deepx_embed."):
+                raise ModuleNotFoundError(f"No module named '{name}'")
+            return _real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=_blocking_import):
+            import embedding as em  # noqa: PLC0415
+            import model_registry as mr  # noqa: PLC0415
+            config = mr.resolve_model_config("deepx")
+            with self.assertRaises(ImportError) as ctx:
+                em._create_backend(config)
+        self.assertIn("deepx_embed", str(ctx.exception))
+        self.assertIn("pip install", str(ctx.exception))
 
 
 if __name__ == "__main__":

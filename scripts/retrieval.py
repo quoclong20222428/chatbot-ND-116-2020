@@ -1,8 +1,14 @@
 """Vector retrieval component for the legal RAG chatbot.
 
 Accepts a Vietnamese legal query, converts it to a 1024-dimensional vector
-using the existing ``EmbeddingModel`` (BAAI/bge-m3), and performs cosine-
-similarity search against ``legal_chunks.embedding`` via pgvector's HNSW index.
+using the currently selected embedding model, and performs cosine-similarity
+search against the model-specific embedding column in ``legal_chunks`` via
+pgvector's HNSW index.
+
+The selected model is determined by the ``EMBEDDING_MODEL`` environment
+variable (or the ``model_name`` constructor argument).  Retrieval
+automatically uses the corresponding embedding column and HNSW index so
+that vectors from different models cannot be accidentally mixed.
 
 This module is strictly a **retrieval baseline** — it does not implement hybrid
 search, RRF, re-ranking, or generation.
@@ -25,7 +31,7 @@ DATABASE_URL
     PostgreSQL connection URL.  Loaded from ``.env`` if not set in the
     environment.
 EMBEDDING_MODEL
-    Hugging Face model identifier (default: ``BAAI/bge-m3``).
+    Hugging Face model identifier or alias (default: ``BAAI/bge-m3``).
 
 Design notes
 ------------
@@ -40,6 +46,8 @@ Design notes
   exist in ``legal_chunks`` as defined in ``init.sql``.
 * Ranking is based **exclusively** on vector cosine similarity.  Metadata does
   not affect ranking in this baseline.
+* Each model's embeddings live in a separate column with its own HNSW index,
+  preventing accidental cross-model vector mixing.
 """
 
 from __future__ import annotations
@@ -61,7 +69,7 @@ MAX_TOP_K = 1000          # guard against unreasonably large requests
 DEFAULT_EF_SEARCH = 40    # pgvector HNSW ef_search default
 
 # ---------------------------------------------------------------------------
-# SQL
+# SQL builders (model-specific column)
 # ---------------------------------------------------------------------------
 
 # Set HNSW ef_search for this transaction only (connection-scoped, not global).
@@ -69,15 +77,18 @@ DEFAULT_EF_SEARCH = 40    # pgvector HNSW ef_search default
 # which is the correct scope for a single-query retrieval call.
 _SET_EF_SEARCH = "SELECT set_config('hnsw.ef_search', %s, true)"
 
-# Cosine *distance* = 1 - cosine_similarity.  We convert to similarity in
-# the SELECT so callers receive a score where higher = more relevant.
-# The query vector is passed twice: once for the ORDER BY distance and once
-# for the SELECT similarity expression — pgvector requires both references.
-_RETRIEVAL_SQL = """
+
+def _build_retrieval_sql(column: str) -> str:
+    """Build the retrieval SQL for the given embedding column.
+
+    Cosine *distance* = 1 - cosine_similarity.  We convert to similarity in
+    the SELECT so callers receive a score where higher = more relevant.
+    """
+    return f"""
 SELECT
     chunk_id,
     text,
-    1 - (embedding <=> %s::vector)  AS similarity,
+    1 - ({column} <=> %s::vector)  AS similarity,
     document_id,
     document_title,
     document_number,
@@ -91,25 +102,28 @@ SELECT
     point,
     content_type
 FROM legal_chunks
-WHERE embedding IS NOT NULL
-ORDER BY embedding <=> %s::vector
+WHERE {column} IS NOT NULL
+ORDER BY {column} <=> %s::vector
 LIMIT %s
 """
 
-# Read-only integrity check (used by verify_database_state).
-_INTEGRITY_SQL = """
+
+def _build_integrity_sql(column: str) -> str:
+    """Build the integrity check SQL for the given embedding column."""
+    return f"""
 SELECT
     count(*)                                  AS total_chunks,
-    count(embedding)                          AS embedded_chunks,
-    count(*) - count(embedding)               AS missing_embeddings
+    count({column})                          AS embedded_chunks,
+    count(*) - count({column})               AS missing_embeddings
 FROM legal_chunks
 """
+
 
 _HNSW_INDEX_SQL = """
 SELECT indexname
 FROM pg_indexes
 WHERE tablename = 'legal_chunks'
-  AND indexname = 'legal_chunks_embedding_hnsw_idx'
+  AND indexname = %s
 """
 
 # ---------------------------------------------------------------------------
@@ -129,7 +143,7 @@ class RetrievalResult:
         Full text content of the chunk.
     score:
         Cosine similarity in the range ``[-1, 1]``.  Higher means more
-        similar.  In practice, for normalised BGE-M3 vectors the range is
+        similar.  In practice, for normalised vectors the range is
         approximately ``[0, 1]``.
     metadata:
         Dictionary of legal metadata columns from ``legal_chunks``.  All
@@ -210,7 +224,10 @@ def _resolve_database_url(database_url: str | None) -> str:
 
 
 class Retriever:
-    """Embed a query with BGE-M3 and retrieve the most similar legal chunks.
+    """Embed a query and retrieve the most similar legal chunks.
+
+    Automatically selects the correct embedding model, embedding column,
+    and HNSW index based on the model configuration.
 
     Parameters
     ----------
@@ -219,8 +236,8 @@ class Retriever:
         ``DATABASE_URL`` environment variable or the ``.env`` file at the
         repository root.
     model_name:
-        Hugging Face model identifier.  Defaults to ``BAAI/bge-m3`` or the
-        ``EMBEDDING_MODEL`` environment variable.
+        Hugging Face model identifier or alias.  Defaults to ``BAAI/bge-m3``
+        or the ``EMBEDDING_MODEL`` environment variable.
     ef_search:
         HNSW ``ef_search`` value applied per-connection before the retrieval
         query.  Higher values improve recall at the cost of latency.
@@ -254,6 +271,14 @@ class Retriever:
         LOGGER.info("Loading embedding model...")
         self._embedding_model = EmbeddingModel(model_name=model_name)
 
+        # Extract model-specific column and index names from the config.
+        self._embedding_column = self._embedding_model.config.embedding_column
+        self._hnsw_index_name = self._embedding_model.config.hnsw_index_name
+
+        # Pre-build SQL with the correct column name.
+        self._retrieval_sql = _build_retrieval_sql(self._embedding_column)
+        self._integrity_sql = _build_integrity_sql(self._embedding_column)
+
         # Surface device information so callers can verify GPU/CPU execution.
         _device = self._embedding_model.device
         LOGGER.info("Embedding device: %s", _device)
@@ -265,8 +290,9 @@ class Retriever:
                 pass
 
         LOGGER.info(
-            "Retriever ready — model: %s, ef_search: %d",
+            "Retriever ready — model: %s, column: %s, ef_search: %d",
             self._embedding_model.model_name,
+            self._embedding_column,
             self._ef_search,
         )
 
@@ -294,7 +320,8 @@ class Retriever:
         ----------
         query:
             A natural-language legal question in Vietnamese (or any language
-            supported by bge-m3).  Must be a non-empty, non-whitespace string.
+            supported by the selected model).  Must be a non-empty,
+            non-whitespace string.
         top_k:
             Number of results to return.  Must be a positive integer not
             exceeding ``MAX_TOP_K`` (``{max_top_k}``).
@@ -331,8 +358,9 @@ class Retriever:
         LOGGER.info("Retrieving top-%d chunks for query: %r", top_k, query[:80])
 
         # --- Step 1: Embed query (no DB connection held open during inference) ---
-        vectors = self._embedding_model.embed_texts([query])
-        query_vector_pg = _vector_to_pg(vectors[0])
+        # Use embed_query() to apply the correct query encoding protocol.
+        query_vector = self._embedding_model.embed_query(query)
+        query_vector_pg = _vector_to_pg(query_vector)
 
         # --- Step 2: Short-lived DB connection for retrieval only ---
         results: list[RetrievalResult] = []
@@ -342,7 +370,7 @@ class Retriever:
                 cur.execute(_SET_EF_SEARCH, (str(self._ef_search),))
 
                 cur.execute(
-                    _RETRIEVAL_SQL,
+                    self._retrieval_sql,
                     (query_vector_pg, query_vector_pg, top_k),
                 )
                 rows = cur.fetchall()
@@ -387,18 +415,18 @@ class Retriever:
         """Run read-only sanity checks and return a result dict.
 
         Checks:
-        - Total chunks and embedded chunks in ``legal_chunks``.
-        - Whether the HNSW index ``legal_chunks_embedding_hnsw_idx`` exists.
+        - Total chunks and embedded chunks for the model-specific column.
+        - Whether the model-specific HNSW index exists.
 
         This method never modifies the database.
         """
         with _connect(self._database_url) as conn:
             with conn.cursor() as cur:
-                cur.execute(_INTEGRITY_SQL)
+                cur.execute(self._integrity_sql)
                 row = cur.fetchone()
                 total, embedded, missing = row[0], row[1], row[2]
 
-                cur.execute(_HNSW_INDEX_SQL)
+                cur.execute(_HNSW_INDEX_SQL, (self._hnsw_index_name,))
                 hnsw_exists = cur.fetchone() is not None
 
         return {
