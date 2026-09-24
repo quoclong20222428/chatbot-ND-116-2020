@@ -223,7 +223,30 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
         mock_conn.cursor.return_value.__enter__ = lambda s: mock_cursor
         mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        chunks = [("chunk-1", "Điều 1 nội dung"), ("chunk-2", "Điều 2 nội dung")]
+        # 8-tuple rows: (chunk_id, text, content_type, document_title,
+        #                chapter, article, clause, point)
+        chunks = [
+            (
+                "chunk-1",
+                "Điều 1 nội dung",
+                "legal_text",
+                "Nghị định 116/2020/NĐ-CP",
+                "Chương I",
+                "Điều 1",
+                "Khoản 1",
+                None,
+            ),
+            (
+                "chunk-2",
+                "Điều 2 nội dung",
+                "qa",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        ]
         with patch.object(ie, "connect_db", return_value=mock_conn):
             stats = ie.index_chunks("postgresql://fake/db", model, chunks, batch_size=32)
 
@@ -282,6 +305,304 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
         result = ie.verify(mock_conn)
         self.assertFalse(result["embedding_dim_ok"])
         self.assertEqual(result["embedding_dim"], 768)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# build_embedding_text tests
+# ---------------------------------------------------------------------------
+
+
+class TestBuildEmbeddingText(unittest.TestCase):
+    """Tests for embedding.build_embedding_text().
+
+    These tests do NOT load BGE-M3; they only verify the string construction
+    logic.  The fake FlagEmbedding module is injected via sys.modules so that
+    importing ``embedding`` succeeds without the real model.
+    """
+
+    _ND116 = "Nghị định 116/2020/NĐ-CP"
+
+    def setUp(self):
+        fake_fe = _make_fake_flag_embedding_module()
+        sys.modules["FlagEmbedding"] = fake_fe
+        sys.modules.pop("embedding", None)
+
+    def tearDown(self):
+        sys.modules.pop("FlagEmbedding", None)
+        sys.modules.pop("embedding", None)
+
+    def _fn(self):
+        """Return the build_embedding_text function."""
+        import embedding as em  # noqa: PLC0415
+        return em.build_embedding_text
+
+    # --- Legal chunk with full metadata ---
+
+    def test_legal_full_metadata_contains_all_labels(self):
+        """All populated fields appear in the correct label order."""
+        fn = self._fn()
+        result = fn(
+            text="Mức hỗ trợ tiền đóng học phí...",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": "Chương II",
+                "article": "Điều 4",
+                "clause": "Khoản 1",
+                "point": "Điểm a",
+            },
+        )
+        self.assertIn("[Document]", result)
+        self.assertIn("[Chapter]", result)
+        self.assertIn("[Article]", result)
+        self.assertIn("[Clause]", result)
+        self.assertIn("[Point]", result)
+        self.assertIn("[Content]", result)
+        self.assertIn(self._ND116, result)
+        self.assertIn("Chương II", result)
+        self.assertIn("Điều 4", result)
+        self.assertIn("Khoản 1", result)
+        self.assertIn("Điểm a", result)
+        self.assertIn("Mức hỗ trợ tiền đóng học phí...", result)
+
+    def test_legal_full_metadata_label_order(self):
+        """Labels appear in Document → Chapter → Article → Clause → Point → Content order."""
+        fn = self._fn()
+        result = fn(
+            text="nội dung",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": "Chương I",
+                "article": "Điều 1",
+                "clause": "Khoản 1",
+                "point": "Điểm a",
+            },
+        )
+        positions = {
+            label: result.index(label)
+            for label in ("[Document]", "[Chapter]", "[Article]", "[Clause]", "[Point]", "[Content]")
+        }
+        self.assertLess(positions["[Document]"], positions["[Chapter]"])
+        self.assertLess(positions["[Chapter]"], positions["[Article]"])
+        self.assertLess(positions["[Article]"], positions["[Clause]"])
+        self.assertLess(positions["[Clause]"], positions["[Point]"])
+        self.assertLess(positions["[Point]"], positions["[Content]"])
+
+    # --- Legal chunk with NULL fields ---
+
+    def test_legal_null_chapter_and_point_omitted(self):
+        """NULL chapter and point produce no label; no placeholder strings."""
+        fn = self._fn()
+        result = fn(
+            text="nội dung",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": None,
+                "article": "Điều 4",
+                "clause": "Khoản 1",
+                "point": None,
+            },
+        )
+        self.assertNotIn("[Chapter]", result)
+        self.assertNotIn("[Point]", result)
+        self.assertIn("[Document]", result)
+        self.assertIn("[Article]", result)
+        self.assertIn("[Clause]", result)
+        self.assertIn("[Content]", result)
+        # No placeholder strings.
+        for placeholder in ("None", "NULL", "N/A", "null"):
+            self.assertNotIn(placeholder, result)
+
+    def test_legal_null_all_structural_only_document_and_content(self):
+        """When only document_title is non-null, only [Document] and [Content] appear."""
+        fn = self._fn()
+        result = fn(
+            text="some text",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": None,
+                "article": None,
+                "clause": None,
+                "point": None,
+            },
+        )
+        self.assertIn("[Document]", result)
+        self.assertIn("[Content]", result)
+        self.assertNotIn("[Chapter]", result)
+        self.assertNotIn("[Article]", result)
+        self.assertNotIn("[Clause]", result)
+        self.assertNotIn("[Point]", result)
+
+    # --- Legal chunk with empty-string metadata fields ---
+
+    def test_legal_empty_string_field_omitted(self):
+        """Empty-string metadata fields are treated the same as NULL."""
+        fn = self._fn()
+        result = fn(
+            text="text",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": "",
+                "article": "Điều 4",
+                "clause": "   ",  # whitespace-only
+                "point": None,
+            },
+        )
+        self.assertNotIn("[Chapter]", result)
+        self.assertNotIn("[Clause]", result)
+        self.assertIn("[Article]", result)
+
+    # --- QA chunk ---
+
+    def test_qa_chunk_returns_text_unchanged(self):
+        """QA chunks are returned unchanged — no structural labels added."""
+        fn = self._fn()
+        qa_text = "Câu hỏi: Sinh viên sư phạm được hỗ trợ bao nhiêu?\nGiải đáp: Theo khoản 1 Điều 4 Nghị định 116..."
+        result = fn(
+            text=qa_text,
+            metadata={"content_type": "qa"},
+        )
+        self.assertEqual(result, qa_text)
+        for label in ("[Document]", "[Chapter]", "[Article]", "[Clause]", "[Point]", "[Content]"):
+            self.assertNotIn(label, result)
+
+    def test_qa_with_legal_text_mention_generates_no_structural_labels(self):
+        """A QA chunk whose text mentions 'Điều 4 Khoản 1' must not produce structural labels."""
+        fn = self._fn()
+        text = "Theo Điều 4 Khoản 1 Nghị định 116 thì ..."
+        result = fn(text=text, metadata={"content_type": "qa"})
+        self.assertEqual(result, text)
+        self.assertNotIn("[Article]", result)
+        self.assertNotIn("[Clause]", result)
+
+    # --- reference/supporting legal source (Luật Giáo dục 2019) ---
+
+    def test_reference_supporting_legal_source_gets_prefix(self):
+        """reference/supporting with content_type='legal_text' must get the full prefix."""
+        fn = self._fn()
+        result = fn(
+            text="Nội dung điều khoản",
+            metadata={
+                "content_type": "legal_text",
+                "source_type": "reference",       # extra key, must be ignored for prefix
+                "document_role": "supporting",    # extra key, must be ignored for prefix
+                "document_title": "Luật Giáo dục 2019",
+                "chapter": "Chương I",
+                "article": "Điều 5",
+                "clause": "Khoản 2",
+                "point": None,
+            },
+        )
+        self.assertIn("[Document]", result)
+        self.assertIn("Luật Giáo dục 2019", result)
+        self.assertIn("[Article]", result)
+        self.assertIn("Điều 5", result)
+        self.assertNotIn("[Point]", result)
+
+    # --- Determinism ---
+
+    def test_determinism_same_input_same_output(self):
+        """Calling build_embedding_text twice with identical args produces identical output."""
+        fn = self._fn()
+        meta = {
+            "content_type": "legal_text",
+            "document_title": self._ND116,
+            "chapter": "Chương II",
+            "article": "Điều 4",
+            "clause": "Khoản 1",
+            "point": "Điểm a",
+        }
+        result1 = fn(text="nội dung", metadata=meta)
+        result2 = fn(text="nội dung", metadata=meta)
+        self.assertEqual(result1, result2)
+
+    # --- Original text preserved verbatim ---
+
+    def test_original_text_preserved_in_content_section(self):
+        """The original chunk text is included verbatim after [Content]."""
+        fn = self._fn()
+        original = "Mức hỗ trợ tiền đóng học phí **quan trọng** \n\n- Bullet 1\n- Bullet 2"
+        result = fn(
+            text=original,
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": None,
+                "article": "Điều 4",
+                "clause": None,
+                "point": None,
+            },
+        )
+        # The original text must appear after [Content]
+        self.assertIn(original, result)
+        content_pos = result.index("[Content]")
+        text_pos = result.index(original)
+        self.assertGreater(text_pos, content_pos)
+
+    # --- Unknown content_type ---
+
+    def test_unknown_content_type_returns_text_unchanged(self):
+        """An unrecognised content_type is treated like 'qa': text returned unchanged."""
+        fn = self._fn()
+        text = "some unrecognised chunk"
+        result = fn(text=text, metadata={"content_type": "unknown_type"})
+        self.assertEqual(result, text)
+
+    def test_missing_content_type_returns_text_unchanged(self):
+        """Missing content_type key is treated as non-legal: text returned unchanged."""
+        fn = self._fn()
+        text = "orphan chunk"
+        result = fn(text=text, metadata={})
+        self.assertEqual(result, text)
+
+    # --- No placeholder strings in any legal output ---
+
+    def test_no_placeholder_strings_in_legal_output(self):
+        """'None', 'NULL', 'N/A' must never appear in the output for a legal chunk."""
+        fn = self._fn()
+        result = fn(
+            text="nội dung",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": None,
+                "article": "Điều 4",
+                "clause": None,
+                "point": None,
+            },
+        )
+        for placeholder in ("None", "NULL", "N/A", "null", "none"):
+            self.assertNotIn(placeholder, result)
+
+    # --- Integration: build_embedding_text output fed to embed_texts ---
+
+    def test_build_embedding_text_output_is_embeddable(self):
+        """Output of build_embedding_text can be passed to embed_texts without error."""
+        import embedding as em  # noqa: PLC0415
+        fn = em.build_embedding_text
+        model = em.EmbeddingModel()
+        emb_input = fn(
+            text="Mức hỗ trợ tiền đóng học phí...",
+            metadata={
+                "content_type": "legal_text",
+                "document_title": self._ND116,
+                "chapter": "Chương II",
+                "article": "Điều 4",
+                "clause": "Khoản 1",
+                "point": None,
+            },
+        )
+        vectors = model.embed_texts([emb_input])
+        self.assertEqual(len(vectors), 1)
+        self.assertEqual(len(vectors[0]), FAKE_DIM)
 
 
 if __name__ == "__main__":
