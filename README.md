@@ -13,14 +13,61 @@ Theo định hướng RAG (Retrieval-Augmented Generation), hệ thống nhận 
 ```text
 Tệp Markdown pháp lý
         ↓
-legal_chunker.py  →  legal_chunks.jsonl
+scripts/legal_chunker.py  →  data/processed/legal_chunks.jsonl
         ↓
-import_legal_data.py  →  PostgreSQL (documents, legal_chunks)
+scripts/validate_legal_chunks.py  →  kiểm tra JSONL
         ↓
-index_embeddings.py   →  Embedding BAAI/bge-m3 → HNSW index
+scripts/import_legal_data.py  →  PostgreSQL (documents, legal_chunks)
         ↓
-retrieval.py          →  Vector similarity search (cosine, pgvector)
+scripts/index_embeddings.py   →  embedding + HNSW index
+        ↓
+scripts/test_retrieval.py     →  đánh giá retrieval HNSW
 ```
+
+## Quy trình chạy Python chính
+
+Chạy các lệnh từ thư mục gốc repository trong PowerShell. Nếu sử dụng `conda`, cần kích hoạt môi trường `chatbot` trước mọi lệnh Python:
+
+```powershell
+conda activate chatbot
+```
+
+1. Tạo chunks từ tài liệu trong `data/markdown/` và `data/raw/qa/`; đầu ra mặc định là `data/processed/legal_chunks.jsonl`:
+
+   ```powershell
+   python scripts/legal_chunker.py
+   ```
+
+2. Kiểm tra JSONL đã tạo. Bước này chỉ đọc dữ liệu và in báo cáo, không sửa database:
+
+   ```powershell
+   python scripts/validate_legal_chunks.py
+   ```
+
+3. Import `data/processed/legal_chunks.jsonl` vào PostgreSQL. Lệnh này chạy `init.sql` rồi cập nhật các bảng, nên cần PostgreSQL và `DATABASE_URL` đã cấu hình:
+
+   ```powershell
+   python scripts/import_legal_data.py
+   ```
+
+4. Sinh embeddings và tạo/cập nhật cột cùng chỉ mục HNSW cho model đã chọn (mặc định `BAAI/bge-m3`). Đây là thao tác ghi database; chỉ chạy sau khi chunks đã import:
+
+   ```powershell
+   python scripts/index_embeddings.py --model bge-m3
+   ```
+
+5. Chạy bộ đánh giá retrieval HNSW sau khi có embeddings. Kết quả được ghi vào `logs/`:
+
+   ```powershell
+   $env:EMBEDDING_MODEL = "bge-m3"
+   python scripts/test_retrieval.py --top-k 10 --ef-search 80
+   ```
+   hoặc thay đổi mô hình trong .env và chạy:
+   ```powershell
+   python scripts/test_retrieval.py --top-k 10 --ef-search 80
+   ```     
+
+Các script cấp cao nhất trong `scripts/` là CLI; package con như `scripts/embeddings/`, `scripts/indexing/`, `scripts/retrievers/` và `scripts/evaluation/` chứa implementation được các CLI import. BM25 là retriever implementation riêng, chưa có CLI benchmark riêng trong repository.
 
 ---
 
@@ -46,7 +93,7 @@ retrieval.py          →  Vector similarity search (cosine, pgvector)
 | Cơ sở dữ liệu PostgreSQL + pgvector (`init.sql`) | ✅ Hoàn thành |
 | Vector hóa BGE-M3 — 617/617 chunks, 1024 chiều | ✅ Hoàn thành |
 | Chỉ mục HNSW (`vector_cosine_ops`, m=16, ef_construction=64) | ✅ Hoàn thành |
-| Module Vector Retrieval (`retrieval.py`) | ✅ Hoàn thành |
+| Module Vector Retrieval (`scripts/retrievers/hnsw.py`) | ✅ Hoàn thành |
 | Đánh giá Retrieval (15 câu hỏi, ground truth phân cấp) | ✅ Hoàn thành |
 | Bộ kiểm thử tự động — 300/300 tests passed (91 embedding + 209 retrieval) | ✅ Hoàn thành |
 | Nhúng tài liệu nhận biết siêu dữ liệu (Metadata-aware) | ✅ Hoàn thành |
@@ -102,13 +149,19 @@ requirements.txt
 README.md
 docs/                        ← tài liệu chi tiết
 scripts/
-├── legal_chunker.py
-├── import_legal_data.py
-├── validate_legal_chunks.py
-├── embedding.py             ← định dạng văn bản + bộ bao bọc BGE-M3
-├── index_embeddings.py      ← quy trình indexing
-├── retrieval.py             ← lớp Retriever
-├── test_retrieval.py        ← kịch bản đánh giá (15 câu hỏi)
+├── data_pipeline/           ← chunking, validation
+├── embeddings/              ← embedding backend, model registry
+├── evaluation/              ← dataset, matching, metrics, runner, reporting
+├── indexing/                ← embedding_index, import_data
+├── retrievers/              ← bm25, hnsw
+├── environment.py           ← cấu hình môi trường (.env)
+├── database.py              ← kết nối PostgreSQL
+├── retrieval_types.py       ← hợp đồng RetrievalResult dùng chung
+├── legal_chunker.py         ← CLI wrapper cho chunking
+├── import_legal_data.py     ← CLI wrapper cho import_data
+├── validate_legal_chunks.py ← CLI wrapper cho validation
+├── index_embeddings.py      ← CLI wrapper cho indexing
+├── test_retrieval.py        ← CLI đánh giá HNSW (15 câu hỏi)
 └── gpu_smoke_test.py
 tests/
 ├── test_embedding.py        ← 30 unit tests

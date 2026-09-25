@@ -109,7 +109,7 @@ class TestModelRegistry(unittest.TestCase):
         _cleanup_modules()
 
     def _import(self):
-        import model_registry as mr  # noqa: PLC0415
+        from embeddings import model_registry as mr  # noqa: PLC0415
         return mr
 
     def test_default_model_is_bge_m3(self):
@@ -228,7 +228,7 @@ class TestEmbeddingModelInit(unittest.TestCase):
         _cleanup_modules()
 
     def _import(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em
 
     def test_default_model_name(self):
@@ -279,7 +279,7 @@ class TestEmbedQueryAndDocuments(unittest.TestCase):
         _cleanup_modules()
 
     def _make_model(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em.EmbeddingModel()
 
     def test_embed_query_returns_single_vector(self):
@@ -335,7 +335,7 @@ class TestSentenceTransformerBackend(unittest.TestCase):
         _cleanup_modules()
 
     def _make_model(self, model_name):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em.EmbeddingModel(model_name=model_name)
 
     def test_vnlegal_lal_loads_correctly(self):
@@ -399,20 +399,20 @@ class TestJinaBackend(unittest.TestCase):
         _cleanup_modules()
 
     def test_jina_loads_with_trust_remote_code(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="jina-v3")
         self.assertEqual(model.model_name, "jinaai/jina-embeddings-v3-hf")
         call_kwargs = self.fake_st.SentenceTransformer.call_args
         self.assertTrue(call_kwargs[1].get("trust_remote_code", False))
 
     def test_jina_embed_query_returns_vector(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="jina-v3")
         result = model.embed_query("test query")
         self.assertEqual(len(result), FAKE_DIM)
 
     def test_jina_embed_documents_returns_vectors(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="jina-v3")
         result = model.embed_documents(["doc1", "doc2"])
         self.assertEqual(len(result), 2)
@@ -434,7 +434,7 @@ class TestDimensionValidation(unittest.TestCase):
         _cleanup_modules()
 
     def test_correct_dimension_passes(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel()
         # Should not raise.
         result = model.embed_query("test")
@@ -443,7 +443,7 @@ class TestDimensionValidation(unittest.TestCase):
     def test_wrong_dimension_raises_valueerror(self):
         """If the model returns wrong-dimension vectors, validation catches it."""
         import numpy as np  # noqa: PLC0415
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
 
         model = em.EmbeddingModel()
 
@@ -474,7 +474,7 @@ class TestModelIsolation(unittest.TestCase):
         _cleanup_modules()
 
     def test_different_models_use_different_columns(self):
-        import model_registry as mr  # noqa: PLC0415
+        from embeddings import model_registry as mr  # noqa: PLC0415
         columns = {}
         for alias in mr.SUPPORTED_ALIASES:
             config = mr.resolve_model_config(alias)
@@ -484,7 +484,7 @@ class TestModelIsolation(unittest.TestCase):
         self.assertEqual(len(columns), len(set(columns.values())))
 
     def test_different_models_use_different_indexes(self):
-        import model_registry as mr  # noqa: PLC0415
+        from embeddings import model_registry as mr  # noqa: PLC0415
         indexes = {}
         for alias in mr.SUPPORTED_ALIASES:
             config = mr.resolve_model_config(alias)
@@ -523,7 +523,7 @@ class TestEmbedTextsMissingFlagEmbedding(unittest.TestCase):
         import builtins  # noqa: PLC0415
         with patch.object(builtins, "__import__", side_effect=_blocking_import):
             # Force reload so _load_model() runs inside the patch context.
-            import embedding as em  # noqa: PLC0415
+            from embeddings import embedding as em  # noqa: PLC0415
             with self.assertRaises(ImportError):
                 em.EmbeddingModel()
 
@@ -546,8 +546,8 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
         _cleanup_modules()
 
     def _import(self):
-        import embedding  # noqa: PLC0415  (needed to resolve import inside index_embeddings)
-        import index_embeddings as ie  # noqa: PLC0415
+        from embeddings import embedding  # noqa: PLC0415  (needed to resolve import inside index_embeddings)
+        from indexing import embedding_index as ie  # noqa: PLC0415
         return ie
 
     def test_vector_to_pg_format(self):
@@ -567,7 +567,7 @@ class TestIndexEmbeddingsLogic(unittest.TestCase):
     def test_index_chunks_succeeds(self):
         """index_chunks should commit embeddings and return correct stats."""
         ie = self._import()
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
 
         model = em.EmbeddingModel()
 
@@ -685,7 +685,7 @@ class TestBuildEmbeddingText(unittest.TestCase):
 
     def _fn(self):
         """Return the build_embedding_text function."""
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em.build_embedding_text
 
     # --- Legal chunk with full metadata ---
@@ -934,7 +934,7 @@ class TestBuildEmbeddingText(unittest.TestCase):
 
     def test_build_embedding_text_output_is_embeddable(self):
         """Output of build_embedding_text can be passed to embed_documents without error."""
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         fn = em.build_embedding_text
         model = em.EmbeddingModel()
         emb_input = fn(
@@ -972,7 +972,7 @@ class TestDeepXRegistry(unittest.TestCase):
         _cleanup_modules()
 
     def _import(self):
-        import model_registry as mr  # noqa: PLC0415
+        from embeddings import model_registry as mr  # noqa: PLC0415
         return mr
 
     def test_deepx_resolves_by_alias(self):
@@ -1056,26 +1056,26 @@ class TestDeepXBackendFactory(unittest.TestCase):
         _cleanup_modules()
 
     def test_factory_creates_deepx_backend(self):
-        import embedding as em  # noqa: PLC0415
-        import model_registry as mr  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
+        from embeddings import model_registry as mr  # noqa: PLC0415
         config = mr.resolve_model_config("deepx")
         backend = em._create_backend(config)
         self.assertIsInstance(backend, em._DeepXBackend)
 
     def test_factory_does_not_create_st_backend_for_deepx(self):
-        import embedding as em  # noqa: PLC0415
-        import model_registry as mr  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
+        from embeddings import model_registry as mr  # noqa: PLC0415
         config = mr.resolve_model_config("deepx")
         backend = em._create_backend(config)
         self.assertNotIsInstance(backend, em._SentenceTransformerBackend)
 
     def test_deepx_embedding_model_uses_deepx_backend(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="deepx")
         self.assertIsInstance(model._backend, em._DeepXBackend)
 
     def test_from_pretrained_called_with_model_id(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         em.EmbeddingModel(model_name="deepx")
         call_args = self.fake_deepx.DeepXEmbed.from_pretrained.call_args
         self.assertEqual(call_args[0][0], "dxtech-asia/deepx-embedding-v1")
@@ -1094,7 +1094,7 @@ class TestDeepXBatching(unittest.TestCase):
         _cleanup_modules()
 
     def _make_model(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em.EmbeddingModel(model_name="deepx")
 
     def test_output_count_matches_input_count(self):
@@ -1154,7 +1154,7 @@ class TestDeepXDimension(unittest.TestCase):
         _cleanup_modules()
 
     def _make_model(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em.EmbeddingModel(model_name="deepx")
 
     def test_embed_query_returns_1024d(self):
@@ -1170,7 +1170,7 @@ class TestDeepXDimension(unittest.TestCase):
 
     def test_truncate_dim_forwarded_to_encode(self):
         """The backend must request truncate_dim=1024 from the model."""
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="deepx")
         model.embed_documents(["test text"])
         encode_call = self.fake_deepx.DeepXEmbed.from_pretrained.return_value.encode.call_args
@@ -1184,7 +1184,7 @@ class TestDeepXDimension(unittest.TestCase):
     def test_wrong_dimension_caught_by_validation(self):
         """If the backend returns wrong-dim vectors, EmbeddingModel catches it."""
         import numpy as np  # noqa: PLC0415
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
 
         def bad_encode(texts, truncate_dim=1024, **kwargs):
             return np.zeros((len(texts), 768), dtype="float32")
@@ -1210,13 +1210,13 @@ class TestDeepXEmptyInput(unittest.TestCase):
         _cleanup_modules()
 
     def test_embed_documents_empty_list_returns_empty(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="deepx")
         result = model.embed_documents([])
         self.assertEqual(result, [])
 
     def test_encode_not_called_for_empty_input(self):
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         model = em.EmbeddingModel(model_name="deepx")
         model.embed_documents([])
         encode_mock = self.fake_deepx.DeepXEmbed.from_pretrained.return_value.encode
@@ -1245,8 +1245,8 @@ class TestDeepXMissingLibrary(unittest.TestCase):
             return _real_import(name, *args, **kwargs)
 
         with patch.object(builtins, "__import__", side_effect=_blocking_import):
-            import embedding as em  # noqa: PLC0415
-            import model_registry as mr  # noqa: PLC0415
+            from embeddings import embedding as em  # noqa: PLC0415
+            from embeddings import model_registry as mr  # noqa: PLC0415
             config = mr.resolve_model_config("deepx")
             with self.assertRaises(ImportError) as ctx:
                 em._create_backend(config)

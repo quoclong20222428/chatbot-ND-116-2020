@@ -108,7 +108,7 @@ def _import_retrieval():
     """Import (or re-import) the retrieval module with fakes in place."""
     for mod in ("retrieval", "embedding"):
         sys.modules.pop(mod, None)
-    import retrieval as rv  # noqa: PLC0415
+    from retrievers import hnsw as rv  # noqa: PLC0415
     return rv
 
 
@@ -238,17 +238,17 @@ class TestQueryEmbedding(_RetrievalTestBase):
         with patch.object(rv, "_connect", return_value=fake_conn):
             retriever = rv.Retriever(database_url="postgresql://fake/db")
 
-        # Capture vectors produced by embed_texts.
-        original_embed = retriever._embedding_model.embed_texts
+        # Capture vectors produced by embed_query.
+        original_embed = retriever._embedding_model.embed_query
 
         captured: list[list[float]] = []
 
-        def _capturing_embed(texts, **kwargs):
-            result = original_embed(texts, **kwargs)
-            captured.extend(result)
+        def _capturing_embed(text, **kwargs):
+            result = original_embed(text, **kwargs)
+            captured.append(result)
             return result
 
-        retriever._embedding_model.embed_texts = _capturing_embed
+        retriever._embedding_model.embed_query = _capturing_embed
         fake_conn2 = _make_fake_psycopg_connect()
         with patch.object(rv, "_connect", return_value=fake_conn2):
             retriever.retrieve("Điều 1 là gì?", top_k=2)
@@ -675,7 +675,7 @@ class TestDeviceSelection(_RetrievalTestBase):
     def _import_embedding(self):
         """Import the embedding module with the fake FlagEmbedding in place."""
         sys.modules.pop("embedding", None)
-        import embedding as em  # noqa: PLC0415
+        from embeddings import embedding as em  # noqa: PLC0415
         return em
 
     def test_cuda_available_selects_cuda(self):
@@ -704,7 +704,7 @@ class TestDeviceSelection(_RetrievalTestBase):
 
         import builtins  # noqa: PLC0415
         with patch.object(builtins, "__import__", side_effect=_blocking_import):
-            device = em.EmbeddingModel._detect_device()
+            device = em._detect_device()
         self.assertEqual(device, "cpu")
 
     def test_device_property_reflects_detected_device(self):
@@ -712,7 +712,7 @@ class TestDeviceSelection(_RetrievalTestBase):
         em = self._import_embedding()
         # The fake BGEM3FlagModel is already in sys.modules (setUp installs it).
         # Patch _detect_device to return 'cpu' explicitly.
-        with patch.object(em.EmbeddingModel, "_detect_device", staticmethod(lambda: "cpu")):
+        with patch.object(em, "_detect_device", lambda: "cpu"):
             model = em.EmbeddingModel()
         self.assertEqual(model.device, "cpu")
 

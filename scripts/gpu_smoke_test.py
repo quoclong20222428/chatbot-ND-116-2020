@@ -17,12 +17,6 @@ Expected output:
 from __future__ import annotations
 
 import sys
-from pathlib import Path
-
-# Make scripts/ importable.
-SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
 
 
 def main() -> int:
@@ -51,7 +45,10 @@ def main() -> int:
 
     # --- Load BAAI/bge-m3 and embed two texts ---
     print("\nLoading BAAI/bge-m3 on GPU (model loads from cache)...")
-    from embedding import EmbeddingModel  # noqa: PLC0415
+    if __package__:
+        from .embeddings.embedding import EmbeddingModel  # noqa: PLC0415
+    else:
+        from embeddings.embedding import EmbeddingModel  # noqa: PLC0415
 
     model = EmbeddingModel()
 

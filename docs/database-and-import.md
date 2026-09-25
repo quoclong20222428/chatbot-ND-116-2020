@@ -46,6 +46,9 @@ scripts/import_legal_data.py
 
 ### Chạy import
 
+Lệnh này import chính tệp JSONL đã được tạo và validation ở bước chuẩn bị dữ liệu:
+`data/processed/legal_chunks.jsonl` → PostgreSQL. Import chạy `init.sql` để khởi tạo schema, sau đó upsert documents/chunks và tái tạo references; vì vậy lệnh này thay đổi database. Chạy chunking và validation trước, đồng thời bảo đảm PostgreSQL, `psql` và `DATABASE_URL` sẵn sàng.
+
 ```powershell
 conda activate chatbot
 python scripts/import_legal_data.py

@@ -699,7 +699,10 @@ class EmbeddingModel:
         *,
         use_fp16: bool = True,
     ) -> None:
-        from model_registry import resolve_model_config  # noqa: PLC0415
+        if __package__:
+            from .model_registry import resolve_model_config  # noqa: PLC0415
+        else:
+            from model_registry import resolve_model_config  # noqa: PLC0415
 
         name = (
             model_name

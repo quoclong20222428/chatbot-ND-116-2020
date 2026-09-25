@@ -53,10 +53,17 @@ Design notes
 from __future__ import annotations
 
 import logging
-import os
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+if __package__.startswith("scripts."):
+    from ..retrieval_types import RetrievalResult
+    from ..database import connect_postgres
+    from ..environment import load_dotenv as _load_env_file, require_database_url
+else:
+    from retrieval_types import RetrievalResult
+    from database import connect_postgres
+    from environment import load_dotenv as _load_env_file, require_database_url
 
 LOGGER = logging.getLogger(__name__)
 
@@ -127,65 +134,13 @@ WHERE tablename = 'legal_chunks'
 """
 
 # ---------------------------------------------------------------------------
-# Result type
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class RetrievalResult:
-    """A single retrieved legal chunk with its similarity score and metadata.
-
-    Attributes
-    ----------
-    chunk_id:
-        Primary key of the chunk in ``legal_chunks``.
-    text:
-        Full text content of the chunk.
-    score:
-        Cosine similarity in the range ``[-1, 1]``.  Higher means more
-        similar.  In practice, for normalised vectors the range is
-        approximately ``[0, 1]``.
-    metadata:
-        Dictionary of legal metadata columns from ``legal_chunks``.  All
-        values come directly from the database; no fields are invented.
-        Keys: ``document_id``, ``document_title``, ``document_number``,
-        ``source_type``, ``document_role``, ``authority_level``,
-        ``retrieval_priority``, ``chapter``, ``article``, ``clause``,
-        ``point``, ``content_type``.  Values come directly from the
-        database; ``None`` means the field is absent for this chunk.
-    """
-
-    chunk_id: str
-    text: str
-    score: float
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _load_dotenv(path: Path) -> None:
-    """Load unset variables from a simple .env file (no extra dependencies)."""
-    if not path.is_file():
-        return
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].lstrip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        os.environ.setdefault(key, value)
+    """Compatibility wrapper for the shared .env parser."""
+    _load_env_file(path)
 
 
 def _vector_to_pg(vector: list[float]) -> str:
@@ -195,27 +150,22 @@ def _vector_to_pg(vector: list[float]) -> str:
 
 def _connect(database_url: str) -> Any:
     """Open and return a psycopg (v3) connection."""
-    try:
-        from psycopg import connect  # type: ignore[import]
-    except ImportError as exc:
-        raise RuntimeError(
-            "psycopg is not installed.  Run: pip install psycopg[binary]"
-        ) from exc
-    return connect(database_url)
+    return connect_postgres(
+        database_url,
+        error_message="psycopg is not installed.  Run: pip install psycopg[binary]",
+    )
 
 
 def _resolve_database_url(database_url: str | None) -> str:
     """Return a usable DATABASE_URL, loading .env if necessary."""
     if database_url:
         return database_url
-    root = Path(__file__).resolve().parents[1]
-    _load_dotenv(root / ".env")
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL is required.  Set it in the environment or in .env"
-        )
-    return url
+    root = Path(__file__).resolve().parents[2]
+    return require_database_url(
+        root / ".env",
+        loader=_load_dotenv,
+        error_message="DATABASE_URL is required.  Set it in the environment or in .env",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -260,13 +210,11 @@ class Retriever:
         self._database_url = _resolve_database_url(database_url)
         self._ef_search = ef_search
 
-        # Import EmbeddingModel from the scripts directory.
-        import sys  # noqa: PLC0415
-        scripts_dir = Path(__file__).parent
-        if str(scripts_dir) not in sys.path:
-            sys.path.insert(0, str(scripts_dir))
-
-        from embedding import EmbeddingModel  # noqa: PLC0415
+        # This sibling module is importable from the documented script entry points.
+        if __package__.startswith("scripts."):
+            from ..embeddings.embedding import EmbeddingModel  # noqa: PLC0415
+        else:
+            from embeddings.embedding import EmbeddingModel  # noqa: PLC0415
 
         LOGGER.info("Loading embedding model...")
         self._embedding_model = EmbeddingModel(model_name=model_name)
@@ -375,7 +323,7 @@ class Retriever:
                 )
                 rows = cur.fetchall()
 
-        for row in rows:
+        for rank_idx, row in enumerate(rows, start=1):
             (
                 chunk_id, text, similarity,
                 document_id, document_title, document_number,
@@ -387,6 +335,9 @@ class Retriever:
                     chunk_id=chunk_id,
                     text=text,
                     score=float(similarity),
+                    retrieval_method="hnsw",
+                    score_type="cosine_similarity",
+                    rank=rank_idx,
                     metadata={
                         "document_id": document_id,
                         "document_title": document_title,

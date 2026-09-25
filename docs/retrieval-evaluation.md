@@ -75,6 +75,18 @@ Nếu ground truth chỉ chỉ định `article` (không ràng buộc `clause` h
 | Biến đổi câu hỏi | Không (None) |
 | Ground truth matching | Hierarchical: Document → Article → Clause → Point |
 
+## Chạy đánh giá hiện tại
+
+Chạy từ thư mục gốc sau khi import chunks, tạo embeddings cho model đã chọn và kích hoạt Conda `chatbot`:
+
+```powershell
+conda activate chatbot
+$env:EMBEDDING_MODEL = "bge-m3"
+python scripts/test_retrieval.py --top-k 10 --ef-search 80
+```
+
+`--query TEXT` chạy một câu hỏi riêng; `--top-k N` đặt số kết quả (mặc định 5), còn `--ef-search N` đặt tham số HNSW (mặc định 40). Model được chọn qua `EMBEDDING_MODEL` hoặc `.env`; model-specific embeddings phải tồn tại trong database trước khi chạy. Script hiện đánh giá HNSW; chưa có option chọn BM25 hoặc `--output-dir`. Báo cáo được ghi tự động vào `logs/`.
+
 ---
 
 ## Benchmark so sánh mô hình embedding

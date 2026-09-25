@@ -23,18 +23,21 @@ BAAI/bge-m3
 ### Kiến trúc module
 
 ```text
-scripts/embedding.py        ← thành phần nhúng thuần túy: text → vector
-scripts/index_embeddings.py ← script chạy indexing: đọc DB → nhúng → ghi DB
-scripts/gpu_smoke_test.py   ← script kiểm tra khả năng tương thích và bộ nhớ GPU
+scripts/embeddings/embedding.py          ← implementation: text → vector, được import
+scripts/indexing/embedding_index.py      ← implementation indexing, được import
+scripts/index_embeddings.py              ← CLI indexing: đọc DB → nhúng → ghi DB
+scripts/gpu_smoke_test.py                ← CLI kiểm tra tương thích và bộ nhớ GPU
 ```
 
-`embedding.py` được tái sử dụng ở giai đoạn Retrieval để nhúng câu hỏi của người dùng với cùng mô hình, không cần thay đổi.
+`scripts/embeddings/embedding.py` là implementation được indexing và HNSW retriever import; không chạy module này như một lệnh độc lập. Model mặc định và registry được định nghĩa trong `scripts/embeddings/model_registry.py`.
 
 ---
 
 ## Kiểm tra môi trường GPU
 
 ```powershell
+conda activate chatbot
+
 # Kiểm tra PyTorch nhận diện GPU
 python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0))"
 
@@ -48,13 +51,15 @@ python scripts/gpu_smoke_test.py
 
 ```powershell
 conda activate chatbot
-# Khuyến nghị --batch-size 4 cho GPU 6GB VRAM (hoặc mặc định 32 nếu chạy CPU)
+# Mặc định dùng model BAAI/bge-m3 và batch size 8; điều chỉnh batch theo bộ nhớ.
 python scripts/index_embeddings.py --batch-size 4
 ```
 
+Indexing đọc chunks đã import từ PostgreSQL, tạo embedding model-specific và ghi vector/cột cùng HNSW index vào database. Chạy sau database import. Chọn model bằng `--model NAME` hoặc `EMBEDDING_MODEL` trong `.env`; mặc định là `BAAI/bge-m3`. `--preview` chỉ xem trước chunks và không tải model hay ghi embeddings.
+
 Script thực hiện theo thứ tự:
 
-1. Tải/nạp `BAAI/bge-m3`
+1. Tải/nạp model đã chọn (`BAAI/bge-m3` mặc định)
 2. Chỉ lấy các chunk có `embedding IS NULL`
 3. Xử lý nhúng theo từng batch
 4. Cập nhật embedding vào database
@@ -97,8 +102,8 @@ INFO: Indexing stage complete. Database is ready for retrieval.
 | Tham số CLI | Biến môi trường (`.env`) | Mặc định | Mô tả |
 |---|---|:---:|---|
 | `--model NAME` | `EMBEDDING_MODEL` | `BAAI/bge-m3` | Định danh mô hình Hugging Face. |
-| `--batch-size N` | `EMBEDDING_BATCH_SIZE` | `32` | Số chunks xử lý trong một lượt. Điều chỉnh theo dung lượng VRAM/RAM. |
-| `--rebuild` | _(không có)_ | `False` | Nhúng lại **toàn bộ 100%** bản ghi. Mặc định tắt (chỉ nhúng chunk có `embedding IS NULL`). |
+| `--batch-size N` | `EMBEDDING_BATCH_SIZE` | `8` | Số chunks xử lý trong một lượt. Điều chỉnh theo dung lượng VRAM/RAM. |
+| `--rebuild` | _(không có)_ | `False` | Nhúng lại **toàn bộ** chunk và cập nhật cột embedding của model đã chọn. Mặc định tắt (chỉ nhúng chunk chưa có vector trong cột đó). |
 | _(trong `embedding.py`)_ | `use_fp16` | `True` (khi có CUDA) | Float16 khi chạy trên GPU NVIDIA, tiết kiệm ~50% VRAM. Tự về `fp32` trên CPU. |
 | _(trong `embedding.py`)_ | `max_length` | `8192` | Giới hạn chiều dài ngữ cảnh token của BGE-M3. |
 
@@ -130,10 +135,12 @@ CREATE INDEX IF NOT EXISTS legal_chunks_embedding_hnsw_idx
 - **Triệu chứng:** Gặp lỗi `CUDA out of memory` hoặc tiến trình chạy chậm.
 - **GPU 4GB – 6GB VRAM** (ví dụ RTX 3050 Laptop): Đặt batch size nhỏ từ `4` đến `8`:
   ```powershell
+  conda activate chatbot
   python scripts/index_embeddings.py --batch-size 4
   ```
 - **GPU >= 8GB – 16GB VRAM**: Tăng batch size lên `16` – `32`:
   ```powershell
+  conda activate chatbot
   python scripts/index_embeddings.py --batch-size 16
   ```
 - **Cấu hình lâu dài trong `.env`**:
@@ -144,26 +151,14 @@ CREATE INDEX IF NOT EXISTS legal_chunks_embedding_hnsw_idx
 
 ### Tình huống 2: Thử nghiệm mô hình Embedding khác
 
-Khi muốn chuyển sang mô hình embedding khác:
+Chọn một model đã đăng ký bằng `--model` hoặc cấu hình `EMBEDDING_MODEL`; model được indexing và retrieval chọn phải giống nhau. Các model hiện được hỗ trợ đều dùng vector 1024 chiều. Indexing tự quản lý cột embedding và HNSW index theo model, nên không cần thay đổi schema thủ công.
 
-1. **Nếu mô hình mới có số chiều khác 1024** (ví dụ `768` chiều):
-   ```powershell
-   # Xóa index HNSW cũ
-   psql --dbname "$env:DATABASE_URL" --command "DROP INDEX IF EXISTS legal_chunks_embedding_hnsw_idx;"
-   # Thay đổi kiểu cột embedding sang số chiều mới
-   psql --dbname "$env:DATABASE_URL" --command "ALTER TABLE legal_chunks ALTER COLUMN embedding TYPE vector(768);"
-   ```
-   Cập nhật hằng số `EMBEDDING_DIM = 768` trong `scripts/embedding.py` và `init.sql`.
+```powershell
+conda activate chatbot
+python scripts/index_embeddings.py --model vietlegal-e5 --rebuild --batch-size 8
+```
 
-2. **Chạy nhúng lại toàn bộ với cờ `--rebuild`:**
-   ```powershell
-   python scripts/index_embeddings.py --rebuild --model "ten-to-chuc/ten-mo-hinh-moi" --batch-size 8
-   ```
-
-3. **Tạo lại chỉ mục HNSW tương ứng:**
-   ```powershell
-   psql --dbname "$env:DATABASE_URL" --command "CREATE INDEX legal_chunks_embedding_hnsw_idx ON legal_chunks USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
-   ```
+`--rebuild` tính lại embedding cho toàn bộ chunks trong cột của model được chọn. Dùng cờ này khi chủ động muốn ghi đè các vector hiện có.
 
 ---
 

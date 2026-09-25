@@ -36,6 +36,14 @@ FlagEmbedding>=1.2.9
 # vietlegal-e5, jina-embeddings-v3, and deepx-embedding-v1
 sentence-transformers>=3.0.0
 
-# Testing: Unit test suite (tests/test_embedding.py)
+# BM25 retrieval: Okapi BM25 implementation (rank_bm25.BM25Okapi)
+# Used by scripts/bm25_retriever.py as the standalone lexical retriever.
+rank-bm25>=0.2.2
+
+# Numerical arrays: required by rank-bm25 for score arrays (get_scores returns ndarray)
+numpy>=1.24.0
+
+# Testing: Unit test suite (tests/test_embedding.py, tests/test_retrieval.py,
+# tests/test_bm25_retriever.py)
 pytest>=8.0.0
 

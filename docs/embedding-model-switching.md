@@ -43,12 +43,13 @@ Thay đổi biến `EMBEDDING_MODEL` trong file `.env`:
 EMBEDDING_MODEL=jina-v3
 
 # Hoặc tên đầy đủ từ Hugging Face:
-EMBEDDING_MODEL=jinaai/jina-embeddings-v3
+EMBEDDING_MODEL=jinaai/jina-embeddings-v3-hf
 ```
 
 ### Bước 2: Sinh embedding cho mô hình mới
 
-```bash
+```powershell
+conda activate chatbot
 python scripts/index_embeddings.py --model jina-v3
 ```
 
@@ -59,7 +60,8 @@ Script tự động:
 
 ### Bước 3: Chạy retrieval / đánh giá
 
-```bash
+```powershell
+conda activate chatbot
 # Retrieval sẽ tự động đọc EMBEDDING_MODEL từ .env
 python scripts/test_retrieval.py
 ```
@@ -77,10 +79,10 @@ python scripts/test_retrieval.py
 .env (EMBEDDING_MODEL=...)
         │
         ▼
-  model_registry.py   ← Cấu hình tập trung cho 6 mô hình
+  scripts/embeddings/model_registry.py   ← Registry các model được hỗ trợ
         │
         ▼
-   embedding.py       ← Chọn backend phù hợp
+   scripts/embeddings/embedding.py       ← Chọn backend phù hợp
    ┌────┼────┬─────┐
    ▼    ▼    ▼     ▼
   BGE  ST  Jina  DeepX  ← 4 backend
@@ -136,31 +138,35 @@ Hệ thống **kiểm tra chiều vector** sau mỗi lần encode.  Nếu vector
 
 ### Chạy từng mô hình một
 
-```bash
+```powershell
+conda activate chatbot
+
 # 1. Sinh embedding cho mô hình cần thử
 python scripts/index_embeddings.py --model vietlegal-e5
 
-# 2. Cập nhật .env
-echo "EMBEDDING_MODEL=vietlegal-e5" > .env.tmp && mv .env.tmp .env
+# 2. Chọn cùng model cho retrieval/evaluation trong PowerShell hiện tại
+$env:EMBEDDING_MODEL = "vietlegal-e5"
 
 # 3. Chạy đánh giá
-python scripts/test_retrieval.py --output-dir results/vietlegal-e5/
+python scripts/test_retrieval.py --top-k 10 --ef-search 80
 ```
 
 ### So sánh nhanh hai mô hình
 
-```bash
-# Mô hình A (mặc định bge-m3 — embedding đã có sẵn)
-EMBEDDING_MODEL=bge-m3 python scripts/test_retrieval.py \
-    --output-dir results/bge-m3/
+```powershell
+conda activate chatbot
+
+# Model A (chỉ khi cột embedding BGE-M3 đã được tạo)
+$env:EMBEDDING_MODEL = "bge-m3"
+python scripts/test_retrieval.py --top-k 10 --ef-search 80
 
 # Mô hình B
 python scripts/index_embeddings.py --model jina-v3
-EMBEDDING_MODEL=jina-v3 python scripts/test_retrieval.py \
-    --output-dir results/jina-v3/
+$env:EMBEDDING_MODEL = "jina-v3"
+python scripts/test_retrieval.py --top-k 10 --ef-search 80
 ```
 
-Sau đó so sánh file kết quả trong `results/`.
+Mỗi lần chạy tự ghi báo cáo riêng vào `logs/`, tên file có model, thời điểm chạy và hậu tố duy nhất. CLI đánh giá hiện tại dùng HNSW; không có tùy chọn `--output-dir` hoặc chọn BM25.
 
 ---
 
@@ -180,10 +186,10 @@ B.
 
 ### Q: Thêm mô hình mới cần sửa file nào?
 
-Chỉ cần sửa **một file**: `scripts/model_registry.py`.  Thêm một `ModelConfig`
+Chỉ cần sửa **một file**: `scripts/embeddings/model_registry.py`.  Thêm một `ModelConfig`
 mới vào danh sách `_MODELS`.  Nếu mô hình mới dùng backend chưa có (không phải
 BGE, SentenceTransformer, hay Jina), thì cần thêm backend class trong
-`scripts/embedding.py`.
+`scripts/embeddings/embedding.py`.
 
 ### Q: Sao cột BGE-M3 tên là `embedding` mà không phải `embedding_bge_m3`?
 
@@ -215,6 +221,6 @@ bỏ qua hoàn toàn `SentenceTransformer`.  Điều này không thay đổi phi
 
 ### Q: Lệnh `--rebuild` làm gì?
 
-`python scripts/index_embeddings.py --model bge-m3 --rebuild` sẽ **xoá và tái
-tạo** toàn bộ embedding cho mô hình đó.  Không ảnh hưởng đến cột của mô hình
-khác.
+`python scripts/index_embeddings.py --model bge-m3 --rebuild` sẽ tính lại và
+ghi đè embedding cho toàn bộ chunks trong cột của model đó. Thao tác này tốn
+thời gian và không thay đổi cột embedding của model khác.

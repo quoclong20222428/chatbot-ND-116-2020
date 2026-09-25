@@ -31,6 +31,8 @@ scripts/legal_chunker.py
         ↓
 data/processed/legal_chunks.jsonl
         ↓
+scripts/validate_legal_chunks.py
+        ↓
 scripts/import_legal_data.py
         ↓
 init.sql + PostgreSQL
@@ -38,7 +40,7 @@ init.sql + PostgreSQL
 documents, legal_chunks, legal_chunk_references
 ```
 
-`init.sql` là nguồn sự thật cho schema và quan hệ cơ sở dữ liệu. Script Python thực thi file này, sau đó đọc JSONL từng dòng để cập nhật dữ liệu và tái tạo bảng tham chiếu.
+Chunking và validation là các bước xử lý tệp; chúng không kết nối hoặc ghi vào database. Import là bước riêng: CLI `scripts/import_legal_data.py` thực thi `init.sql`, sau đó đọc `data/processed/legal_chunks.jsonl` từng dòng để cập nhật dữ liệu và tái tạo bảng tham chiếu.
 
 ---
 
@@ -56,6 +58,26 @@ Script `scripts/legal_chunker.py` chuyển đổi các tệp Markdown thành cá
 
 - **617 legal chunks** từ toàn bộ bộ văn bản pháp lý.
 - Định dạng đầu ra: JSONL (`data/processed/legal_chunks.jsonl`), mỗi đoạn nằm trên một dòng.
+
+Chạy từ thư mục gốc sau khi kích hoạt môi trường Conda:
+
+```powershell
+conda activate chatbot
+python scripts/legal_chunker.py
+```
+
+Lệnh này chỉ tạo/cập nhật tệp JSONL; không sửa database. Có thể truyền `--output PATH` để chọn tệp đầu ra khác.
+
+## Validation — Kiểm tra JSONL
+
+Sau khi chunking, kiểm tra tệp kết quả trước khi import:
+
+```powershell
+conda activate chatbot
+python scripts/validate_legal_chunks.py
+```
+
+Validator đọc `data/processed/legal_chunks.jsonl` mặc định và in báo cáo JSON về tính hợp lệ, tham chiếu và số lượng chunk. Nó không sửa tệp hay database. Dùng `--input PATH` để kiểm tra tệp khác.
 
 ---
 

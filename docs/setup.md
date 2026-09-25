@@ -69,6 +69,7 @@ pip install -r requirements.txt
 ### Bước 4: Kiểm tra môi trường
 
 ```powershell
+conda activate chatbot
 where.exe psql
 python --version
 ```

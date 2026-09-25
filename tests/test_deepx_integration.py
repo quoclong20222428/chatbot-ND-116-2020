@@ -44,7 +44,7 @@ def main() -> None:
         sys.exit(1)
 
     # --- 2. Load EmbeddingModel with the deepx backend ---
-    import embedding as em
+    from embeddings import embedding as em
 
     print("Loading DeepX model...")
     model = em.EmbeddingModel(model_name="deepx")
