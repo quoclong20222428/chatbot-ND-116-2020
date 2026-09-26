@@ -33,8 +33,18 @@ pgvector>=0.3.0
 FlagEmbedding>=1.2.9
 
 # Embedding models: Sentence Transformers for vnlegal-lal, vietlegal-harrier,
-# vietlegal-e5, jina-embeddings-v3, and deepx-embedding-v1
+# vietlegal-e5, and jina-embeddings-v3
 sentence-transformers>=3.0.0
+
+# DeepX Embedding v1: Official deepx_embed package (Gated DeltaNet-2 architecture,
+# NOT compatible with generic SentenceTransformer loading).
+# Install: pip install git+https://github.com/dx-tech-ai/deepx-embed.git
+# Requires: torch, transformers, huggingface_hub, einops (pulled automatically)
+# Optional (faster inference, required for fine-tuning):
+#   pip install git+https://github.com/fla-org/flash-linear-attention.git
+# The deepx_embed package is listed separately because it is sourced from
+# GitHub rather than PyPI and must be installed with the git+ URL.
+# deepx-embed>=0.1.0  # uncomment and use pip install git+https://github.com/dx-tech-ai/deepx-embed.git
 
 # BM25 retrieval: Okapi BM25 implementation (rank_bm25.BM25Okapi)
 # Used by scripts/bm25_retriever.py as the standalone lexical retriever.

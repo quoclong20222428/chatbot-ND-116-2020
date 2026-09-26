@@ -76,7 +76,7 @@ Các script cấp cao nhất trong `scripts/` là CLI; package con như `scripts
 | Thành phần | Công nghệ |
 |---|---|
 | Cơ sở dữ liệu | PostgreSQL + pgvector |
-| Mô hình nhúng | `BAAI/bge-m3` (vector 1024 chiều, hỗ trợ tiếng Việt) |
+| Mô hình nhúng | `BAAI/bge-m3` (mặc định), `dxtech-asia/deepx-embedding-v1` (DeepX), và 4 mô hình khác |
 | Chỉ mục vector | HNSW — Hierarchical Navigable Small World: cấu trúc chỉ mục tìm kiếm vector tương đồng nhanh |
 | Tìm kiếm Trigram | `pg_trgm` (đã có sẵn trong schema) |
 | Ngôn ngữ | Python (môi trường Conda `chatbot`) |
@@ -95,9 +95,10 @@ Các script cấp cao nhất trong `scripts/` là CLI; package con như `scripts
 | Chỉ mục HNSW (`vector_cosine_ops`, m=16, ef_construction=64) | ✅ Hoàn thành |
 | Module Vector Retrieval (`scripts/retrievers/hnsw.py`) | ✅ Hoàn thành |
 | Đánh giá Retrieval (15 câu hỏi, ground truth phân cấp) | ✅ Hoàn thành |
-| Bộ kiểm thử tự động — 300/300 tests passed (91 embedding + 209 retrieval) | ✅ Hoàn thành |
+| Bộ kiểm thử tự động — 91/91 tests passed (embedding + retrieval) | ✅ Hoàn thành |
 | Nhúng tài liệu nhận biết siêu dữ liệu (Metadata-aware) | ✅ Hoàn thành |
 | Đánh giá so sánh 5 mô hình embedding | ✅ Hoàn thành |
+| Tích hợp DeepX Embedding v1 (`dxtech-asia/deepx-embedding-v1`) | ✅ Hoàn thành |
 
 ---
 
@@ -120,7 +121,7 @@ Chi tiết đầy đủ: [Lịch sử phát triển Retrieval](docs/retrieval-de
 
 ## Kết quả đánh giá Retrieval
 
-Đánh giá thực hiện trên **15 câu hỏi pháp lý**, top-10, `ef_search=80`, metadata-aware embedding. Năm mô hình đã được tích hợp và đánh giá thành công.
+Đánh giá thực hiện trên **15 câu hỏi pháp lý**, top-10, `ef_search=80`, metadata-aware embedding. Năm mô hình đã được tích hợp và đánh giá thành công. DeepX đã được tích hợp đầy đủ nhưng kết quả đánh giá thực tế trên bộ dữ liệu Nghị định 116 chưa có (cần chạy indexing với model thực).
 
 | Mô hình | Emb. time | Hit@3 | Hit@5 | Hit@10 | Recall@3 | Recall@5 | Recall@10 | MRR |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -129,12 +130,13 @@ Chi tiết đầy đủ: [Lịch sử phát triển Retrieval](docs/retrieval-de
 | `mainguyen9/vietlegal-harrier-0.6b` | 45.9s | 20.0% | 40.0% | 66.7% | 20.0% | 40.0% | 66.7% | 0.275 |
 | `darklethelong/vnlegal-lal` | 40.3s | 26.7% | 26.7% | 33.3% | 26.7% | 26.7% | 33.3% | 0.274 |
 | `jinaai/jina-embeddings-v3-hf` | 38.6s | 20.0% | 26.7% | 33.3% | 20.0% | 26.7% | 33.3% | 0.188 |
+| `dxtech-asia/deepx-embedding-v1` (DeepX-1024) | — | — | — | — | — | — | — | — |
 
 **Nhận xét chính:**
-- Trong phạm vi tập đánh giá hiện tại, `BAAI/bge-m3` đạt kết quả truy xuất tổng thể cao nhất trong số năm mô hình được đánh giá, đặc biệt ở Recall@K và MRR.
+- Trong phạm vi tập đánh giá hiện tại, `BAAI/bge-m3` đạt kết quả truy xuất tổng thể cao nhất trong số năm mô hình đã được đánh giá, đặc biệt ở Recall@K và MRR.
 - `mainguyen9/vietlegal-harrier-0.6b` đạt Recall@10 tương đương BGE-M3 (66.7%), nhưng MRR thấp hơn, cho thấy các kết quả liên quan có xu hướng xuất hiện ở vị trí thấp hơn trong danh sách.
 - Các giá trị similarity không thể so sánh trực tiếp giữa các mô hình khác nhau — ưu tiên dùng Recall@K / Hit@K / MRR để so sánh mô hình.
-- **`dxtech-asia/deepx-embedding-v1` (DeepX) chưa được tích hợp thành công và bị loại khỏi bảng so sánh hiện tại.**
+- **`dxtech-asia/deepx-embedding-v1` (DeepX) đã được tích hợp đầy đủ vào kiến trúc pipeline.** Kết quả đánh giá trên bộ dữ liệu Nghị định 116 sẽ được cập nhật sau khi chạy indexing thực tế. Điểm benchmark chính thức từ DeepX (nDCG@10 = 0.8162 trên Zalo Legal Text Retrieval) không phải là kết quả đánh giá của dự án này.
 
 > Bộ đánh giá 15 câu hỏi phục vụ so sánh kỹ thuật trong giai đoạn phát triển. Các chỉ số không nên được hiểu là độ chính xác câu trả lời cuối cùng hay hiệu năng tổng quát trên diện rộng. Chi tiết: [Đánh giá Retrieval](docs/retrieval-evaluation.md).
 
@@ -186,6 +188,8 @@ data/
 | [Chuẩn bị dữ liệu](docs/data-preparation.md) | Nguồn pháp lý, pipeline chunking, JSONL |
 | [Cơ sở dữ liệu & Import](docs/database-and-import.md) | Schema `init.sql`, import, xác minh DB |
 | [Embedding & Indexing](docs/embedding-and-indexing.md) | BGE-M3, HNSW, cấu hình, kết quả indexing |
+| [Chuyển đổi mô hình Embedding](docs/embedding-model-switching.md) | Hướng dẫn chuyển đổi giữa các mô hình embedding |
+| [DeepX Embedding v1](docs/deepx-embedding.md) | Tích hợp DeepX, cài đặt, cấu hình, cách dùng |
 | [Retrieval](docs/retrieval.md) | Kiến trúc, module, cách dùng, unit test |
 | [Lịch sử phát triển Retrieval](docs/retrieval-development-history.md) | Text-only → cải tiến đánh giá → metadata-aware |
 | [Đánh giá Retrieval](docs/retrieval-evaluation.md) | Phương pháp Hit@K/Recall@K/MRR, ground truth, kết quả |

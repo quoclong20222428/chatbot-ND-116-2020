@@ -552,9 +552,31 @@ class _DeepXBackend(_EmbeddingBackend):
         except (ValueError, TypeError):
             pass
 
-        self._model: DeepXEmbed = DeepXEmbed.from_pretrained(
-            config.model_id, **load_kwargs,
-        )
+        # In transformers >= 4.47, AutoTokenizer.from_pretrained encounters an
+        # upstream issue with rope_scaling in custom architectures
+        # ('PreTrainedConfig' object has no attribute 'max_position_embeddings').
+        # Supplying tokenizer_type="gemma" (the underlying architecture of DeepX's
+        # tokenizer) resolves this cleanly without modifying any config files or
+        # monkey-patching PreTrainedConfig.
+        from transformers import AutoTokenizer  # type: ignore[import]  # noqa: PLC0415
+        orig_tok_from_pretrained = AutoTokenizer.from_pretrained
+
+        def _safe_tok_from_pretrained(pretrained_model_name_or_path, *args, **kwargs):
+            try:
+                return orig_tok_from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+            except AttributeError as exc:
+                if "max_position_embeddings" in str(exc):
+                    kwargs["tokenizer_type"] = "gemma"
+                    return orig_tok_from_pretrained(pretrained_model_name_or_path, *args, **kwargs)
+                raise
+
+        AutoTokenizer.from_pretrained = _safe_tok_from_pretrained
+        try:
+            self._model: DeepXEmbed = DeepXEmbed.from_pretrained(
+                config.model_id, **load_kwargs,
+            )
+        finally:
+            AutoTokenizer.from_pretrained = orig_tok_from_pretrained
 
         # Detect whether encode() accepts batch_size natively.
         try:

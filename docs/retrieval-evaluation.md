@@ -93,7 +93,7 @@ python scripts/test_retrieval.py --top-k 10 --ef-search 80
 
 Năm mô hình embedding đã được tích hợp và đánh giá thành công với cùng cấu hình truy xuất và cùng bộ câu hỏi đánh giá.
 
-> **Lưu ý về DeepX:** `dxtech-asia/deepx-embedding-v1` (DeepX) là mô hình thứ sáu được xem xét, nhưng **chưa được tích hợp thành công** vào hệ thống đánh giá. Do đó, DeepX không xuất hiện trong bảng so sánh dưới đây. Xem thêm: [DeepX Embedding Backend](deepx-backend.md).
+> **Lưu ý về DeepX:** `dxtech-asia/deepx-embedding-v1` (DeepX) là mô hình thứ sáu đã được tích hợp đầy đủ vào kiến trúc của hệ thống (hỗ trợ chuyển đổi qua `.env`/CLI, backend chuyên dụng `deepx_embed`, 91/91 unit/regression tests đạt chuẩn). Kết quả benchmark đánh giá retrieval thực nghiệm trên 617 chunks và 15 câu hỏi của Nghị định 116 sẽ được cập nhật sau khi hoàn tất sinh vector trên database thực tế. Chi tiết kiến trúc và hướng dẫn sử dụng xem tại: [DeepX Embedding v1](deepx-embedding.md).
 
 ### Kết quả tổng hợp
 
@@ -183,7 +183,7 @@ Các bước phát triển tiếp theo có thể cải thiện thêm chất lư�
 - **Reranking**: Áp dụng cross-encoder reranking để tinh chỉnh thứ tự kết quả sau retrieval.
 - **Tập đánh giá lớn hơn và đa dạng hơn**: Mở rộng bộ câu hỏi đánh giá để kết quả benchmark có độ tin cậy thống kê cao hơn.
 - **Đo thời gian lặp lại**: Chạy nhiều lần đo để có baseline tốc độ embedding đáng tin cậy hơn.
-- **Tích hợp DeepX**: Hoàn thiện tích hợp `dxtech-asia/deepx-embedding-v1` để đưa vào so sánh benchmark trong các lần đánh giá tiếp theo.
+- **Đánh giá thực nghiệm DeepX**: Chạy benchmark retrieval đầy đủ cho `dxtech-asia/deepx-embedding-v1` (ở cả 2 cấu hình Matryoshka 1024d và native 1536d) trên toàn bộ 617 chunks để bổ sung vào bảng so sánh tổng hợp.
 
 > Các hướng phát triển trên chưa được triển khai tại thời điểm hiện tại.
 
@@ -194,6 +194,6 @@ Các bước phát triển tiếp theo có thể cải thiện thêm chất lư�
 - [Retrieval — Kiến trúc và sử dụng](retrieval.md)
 - [Lịch sử phát triển Retrieval](retrieval-development-history.md)
 - [Chuyển đổi mô hình embedding](embedding-model-switching.md)
-- [DeepX Embedding Backend](deepx-backend.md)
+- [DeepX Embedding v1](deepx-embedding.md)
 - [Quay lại README](../README.md)
 
